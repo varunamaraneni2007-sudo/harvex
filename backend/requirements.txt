@@ -1,2 +1,8 @@
 fastapi
 uvicorn
+ortools
+pytest
+httpx
+supabase
+python-dotenv
+anthropic

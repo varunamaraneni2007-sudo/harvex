@@ -17,6 +17,12 @@ dist-ssr
 .idea
 .DS_Store
 
+# Environment / secrets — never commit these
+.env
+.env.local
+.env.*.local
+backend/.env
+
 # Python
 __pycache__/
 *.py[cod]

@@ -1,326 +1,205 @@
-"""
-Automated tests for the Farm2Value Decision Engine.
-Run with:  python3 -m pytest backend/test_engine.py -v
-       or: python3 backend/test_engine.py
-"""
-
-import sys
-import os
-sys.path.insert(0, os.path.dirname(__file__))
-
-from engine import (
-    FarmerData,
-    OpportunityData,
-    evaluate_opportunity,
-    run_decision_engine,
-    QUALITY_RANK,
-    BASE_SPOILAGE_RATE,
+import pytest
+from main import (
+    calculate_opportunities,
+    ProduceInput,
+    MARKETS,
+    QUALITY_MULTIPLIER,
+    _solve_strategy,
+    _build_strategy,
+    _true_net_per_kg,
+    _effective_spoilage_pct,
+    ALLOCATION_STRATEGIES,
 )
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
-def make_farmer(quality="Standard", quantity=400.0, shelf_life_days=6):
-    return FarmerData(
-        crop="Onion",
-        quantity=quantity,
-        quality=quality,
-        shelf_life_days=shelf_life_days,
+def _input(**overrides):
+    base = dict(
+        crop="onion",
+        quantity_kg=400,
+        quality="Standard",
+        farmer_location="Vijayawada",
+        harvest_date="18/09/2026",
+        shelf_life_days=5,
     )
+    base.update(overrides)
+    return ProduceInput(**base)
 
 
-def make_opp(
-    id=1,
-    name="Test Buyer",
-    buyer_type="Direct Buyer",
-    price=28.5,
-    capacity=500,
-    distance=12.0,
-    transport_cost=320.0,
-    travel_time=25,
-    demand="High",
-    min_quality="Standard",
-    spoilage_risk="Low",
-):
-    return OpportunityData(
-        id=id,
-        name=name,
-        type=buyer_type,
-        price_per_kg=price,
-        maximum_capacity_kg=capacity,
-        distance_km=distance,
-        estimated_transport_cost=transport_cost,
-        estimated_travel_time_minutes=travel_time,
-        demand_level=demand,
-        minimum_quality=min_quality,
-        spoilage_risk=spoilage_risk,
-    )
+def _run_optimal(data: ProduceInput):
+    """Run the optimal (unweighted) strategy and return the AllocationStrategy."""
+    cfg = next(c for c in ALLOCATION_STRATEGIES if c["id"] == "optimal")
+    qm = QUALITY_MULTIPLIER.get(data.quality, 1.0)
+    raw = _solve_strategy(data.quantity_kg, MARKETS, qm, data.shelf_life_days, 1.0, 1.0)
+    return _build_strategy(data, cfg, qm, raw)
 
 
-# ---------------------------------------------------------------------------
-# Test 1: Quality gate — Low farmer rejected by Premium buyer
-# ---------------------------------------------------------------------------
-def test_quality_gate_fail():
-    farmer = make_farmer(quality="Low")
-    opp    = make_opp(min_quality="Premium")
-    result = evaluate_opportunity(farmer, opp)
-    assert not result.is_feasible, "Low quality farmer should be rejected by Premium buyer"
-    assert result.allocated_quantity_kg == 0
-    assert result.gross_revenue == 0
-    assert "Quality mismatch" in (result.infeasibility_reason or "")
-    print("PASS test_quality_gate_fail")
+# ── /api/recommend (single-channel) ──────────────────────────────────────────
+
+def test_recommend_results_sorted_by_net_value():
+    results = calculate_opportunities(_input())
+    net_values = [r.net_value for r in results]
+    assert net_values == sorted(net_values, reverse=True)
 
 
-# ---------------------------------------------------------------------------
-# Test 2: Quality gate — Standard farmer accepted by Low-min buyer
-# ---------------------------------------------------------------------------
-def test_quality_gate_pass():
-    farmer = make_farmer(quality="Standard")
-    opp    = make_opp(min_quality="Low")
-    result = evaluate_opportunity(farmer, opp)
-    assert result.is_feasible, "Standard quality should pass a Low minimum requirement"
-    assert result.gross_revenue > 0
-    print("PASS test_quality_gate_pass")
+def test_recommend_ranks_are_sequential():
+    results = calculate_opportunities(_input())
+    assert [r.rank for r in results] == list(range(1, len(results) + 1))
 
 
-# ---------------------------------------------------------------------------
-# Test 3: Allocated quantity is capped at buyer capacity
-# ---------------------------------------------------------------------------
-def test_quantity_capped_at_capacity():
-    farmer = make_farmer(quantity=1000.0)
-    opp    = make_opp(capacity=300)
-    result = evaluate_opportunity(farmer, opp)
-    assert result.allocated_quantity_kg == 300.0, (
-        f"Expected 300 kg allocated, got {result.allocated_quantity_kg}"
-    )
-    print("PASS test_quantity_capped_at_capacity")
+def test_recommend_premium_gets_higher_price_than_standard():
+    std = {r.market_name: r.price_per_kg for r in calculate_opportunities(_input(quality="Standard"))}
+    prem = {r.market_name: r.price_per_kg for r in calculate_opportunities(_input(quality="Premium"))}
+    for name in set(std) & set(prem):
+        assert prem[name] > std[name]
 
 
-# ---------------------------------------------------------------------------
-# Test 4: Allocated quantity uses full farmer stock when it is smaller
-# ---------------------------------------------------------------------------
-def test_quantity_uses_farmer_stock():
-    farmer = make_farmer(quantity=150.0)
-    opp    = make_opp(capacity=500)
-    result = evaluate_opportunity(farmer, opp)
-    assert result.allocated_quantity_kg == 150.0
-    print("PASS test_quantity_uses_farmer_stock")
+def test_recommend_low_gets_lower_price_than_standard():
+    std = {r.market_name: r.price_per_kg for r in calculate_opportunities(_input(quality="Standard"))}
+    low = {r.market_name: r.price_per_kg for r in calculate_opportunities(_input(quality="Low"))}
+    for name in set(std) & set(low):
+        assert low[name] < std[name]
 
 
-# ---------------------------------------------------------------------------
-# Test 5: Gross revenue formula — allocated_qty × price_per_kg
-# ---------------------------------------------------------------------------
-def test_gross_revenue_formula():
-    farmer = make_farmer(quantity=400.0)
-    opp    = make_opp(price=28.5, capacity=500)
-    result = evaluate_opportunity(farmer, opp)
-    expected_gross = 400.0 * 28.5
-    assert abs(result.gross_revenue - expected_gross) < 0.01, (
-        f"Expected gross revenue {expected_gross}, got {result.gross_revenue}"
-    )
-    print("PASS test_gross_revenue_formula")
+def test_recommend_allocated_qty_does_not_exceed_capacity():
+    results = calculate_opportunities(_input(quantity_kg=99999))
+    for r in results:
+        assert r.allocated_qty_kg <= 10000
 
 
-# ---------------------------------------------------------------------------
-# Test 6: Net value formula — gross - transport - spoilage_loss
-# ---------------------------------------------------------------------------
-def test_net_value_formula():
-    farmer = make_farmer(quantity=400.0)
-    opp    = make_opp(price=28.5, capacity=500, transport_cost=320.0)
-    result = evaluate_opportunity(farmer, opp)
-    expected_net = result.gross_revenue - result.transport_cost - result.spoilage_loss
-    assert abs(result.expected_net_value - expected_net) < 0.01, (
-        f"Net value formula mismatch: expected {expected_net}, got {result.expected_net_value}"
-    )
-    print("PASS test_net_value_formula")
+def test_recommend_net_value_formula():
+    results = calculate_opportunities(_input(quantity_kg=100, shelf_life_days=10))
+    for r in results:
+        expected = round(r.gross_revenue - r.transport_cost - r.spoilage_loss_value, 2)
+        assert abs(r.net_value - expected) < 0.01
 
 
-# ---------------------------------------------------------------------------
-# Test 7: Shorter shelf life → higher spoilage percentage
-# ---------------------------------------------------------------------------
-def test_shelf_life_increases_spoilage():
-    opp         = make_opp(spoilage_risk="Medium", distance=10.0, demand="High")
-    farmer_long = make_farmer(shelf_life_days=20)
-    farmer_short= make_farmer(shelf_life_days=2)
-    result_long  = evaluate_opportunity(farmer_long, opp)
-    result_short = evaluate_opportunity(farmer_short, opp)
-    assert result_short.spoilage_percentage > result_long.spoilage_percentage, (
-        "Shorter shelf life should produce higher spoilage percentage"
-    )
-    print("PASS test_shelf_life_increases_spoilage")
+def test_recommend_all_net_values_positive():
+    results = calculate_opportunities(_input())
+    for r in results:
+        assert r.net_value > 0
 
 
-# ---------------------------------------------------------------------------
-# Test 8: Farther distance → higher spoilage percentage (same shelf life)
-# ---------------------------------------------------------------------------
-def test_distance_increases_spoilage():
-    farmer    = make_farmer(shelf_life_days=5)
-    opp_near  = make_opp(id=1, distance=10.0)
-    opp_far   = make_opp(id=2, distance=70.0)
-    near      = evaluate_opportunity(farmer, opp_near)
-    far       = evaluate_opportunity(farmer, opp_far)
-    assert far.spoilage_percentage > near.spoilage_percentage, (
-        "Farther opportunity should have higher spoilage percentage"
-    )
-    print("PASS test_distance_increases_spoilage")
+# ── Allocation engine (multi-channel) ────────────────────────────────────────
+
+def test_total_allocation_does_not_exceed_farmer_quantity():
+    strategy = _run_optimal(_input(quantity_kg=400))
+    assert strategy.total_quantity_allocated <= 400.01  # small float tolerance
 
 
-# ---------------------------------------------------------------------------
-# Test 9: Nearby lower-price buyer can beat far higher-price buyer on net value
-# ---------------------------------------------------------------------------
-def test_nearby_low_price_beats_distant_high_price():
-    farmer = make_farmer(quantity=400.0, shelf_life_days=4)
-
-    # High-price but far, expensive transport, high spoilage risk
-    far_premium = make_opp(
-        id=1,
-        name="Far Premium Buyer",
-        price=34.0,
-        capacity=500,
-        distance=65.0,
-        transport_cost=1200.0,
-        demand="Medium",
-        min_quality="Standard",
-        spoilage_risk="High",
-    )
-
-    # Lower price but close, cheap transport, low spoilage risk
-    near_standard = make_opp(
-        id=2,
-        name="Nearby Standard Buyer",
-        price=26.0,
-        capacity=500,
-        distance=10.0,
-        transport_cost=300.0,
-        demand="High",
-        min_quality="Standard",
-        spoilage_risk="Low",
-    )
-
-    far_result  = evaluate_opportunity(farmer, far_premium)
-    near_result = evaluate_opportunity(farmer, near_standard)
-
-    assert near_result.expected_net_value > far_result.expected_net_value, (
-        f"Nearby buyer (₹{near_result.expected_net_value}) should beat "
-        f"far buyer (₹{far_result.expected_net_value}) on net value.\n"
-        f"  Far:  gross={far_result.gross_revenue}, transport={far_result.transport_cost}, "
-        f"spoilage={far_result.spoilage_loss:.2f}, net={far_result.expected_net_value:.2f}\n"
-        f"  Near: gross={near_result.gross_revenue}, transport={near_result.transport_cost}, "
-        f"spoilage={near_result.spoilage_loss:.2f}, net={near_result.expected_net_value:.2f}"
-    )
-    print(f"PASS test_nearby_low_price_beats_distant_high_price")
-    print(f"  Far  buyer (₹34/kg, 65 km): net = ₹{far_result.expected_net_value:,.2f}")
-    print(f"  Near buyer (₹26/kg, 10 km): net = ₹{near_result.expected_net_value:,.2f}")
+def test_no_channel_exceeds_its_market_capacity():
+    strategy = _run_optimal(_input(quantity_kg=99999))
+    caps = {m["market_name"]: m["capacity_kg"] for m in MARKETS}
+    for ch in strategy.allocations:
+        assert ch.quantity_kg <= caps[ch.market_name] + 0.01
 
 
-# ---------------------------------------------------------------------------
-# Test 10: run_decision_engine returns feasible first, sorted by net value desc
-# ---------------------------------------------------------------------------
-def test_engine_sorts_by_net_value():
-    farmer = make_farmer(quantity=400.0, shelf_life_days=7)
-    opps = [
-        make_opp(id=1, price=22.0, capacity=5000, distance=35.0, transport_cost=850.0,
-                 demand="High", spoilage_risk="Medium", min_quality="Low"),
-        make_opp(id=2, price=28.5, capacity=500,  distance=12.0, transport_cost=320.0,
-                 demand="High", spoilage_risk="Low",    min_quality="Standard"),
-        make_opp(id=3, price=34.0, capacity=200,  distance=8.0,  transport_cost=180.0,
-                 demand="Medium", spoilage_risk="Low",  min_quality="Premium"),  # rejected
-        make_opp(id=4, price=19.5, capacity=800,  distance=62.0, transport_cost=1200.0,
-                 demand="Medium", spoilage_risk="High", min_quality="Low"),
-    ]
-    results = run_decision_engine(farmer, opps)
+def test_multi_channel_beats_single_channel_net_value():
+    """
+    Multi-channel allocation should be >= any single-channel allocation
+    because the LP can always replicate a single-channel solution.
+    """
+    data = _input(quantity_kg=1000)
+    strategy = _run_optimal(data)
 
-    feasible = [r for r in results if r.is_feasible]
-    infeasible = [r for r in results if not r.is_feasible]
-
-    # Feasible results should be sorted descending by net value
-    for i in range(len(feasible) - 1):
-        assert feasible[i].expected_net_value >= feasible[i+1].expected_net_value, (
-            "Feasible results should be sorted by net value (descending)"
-        )
-
-    # Infeasible results should come last
-    assert all(r.is_feasible for r in results[:len(feasible)])
-    assert all(not r.is_feasible for r in results[len(feasible):])
-
-    print(f"PASS test_engine_sorts_by_net_value")
-    print(f"  {len(feasible)} feasible, {len(infeasible)} infeasible")
-    for r in feasible:
-        print(f"    [{r.risk_level:6s} risk] {r.opportunity_name}: net = ₹{r.expected_net_value:,.2f}")
+    single_best = max(calculate_opportunities(data), key=lambda r: r.net_value)
+    assert strategy.total_net_value >= single_best.net_value - 0.01
 
 
-# ---------------------------------------------------------------------------
-# Test 11: Spoilage capped at 60%
-# ---------------------------------------------------------------------------
-def test_spoilage_capped_at_sixty_percent():
-    # Worst case: 1 day shelf life, high spoilage risk, low demand, 80 km distance
-    farmer = make_farmer(shelf_life_days=1, quality="Low")
-    opp    = make_opp(
-        spoilage_risk="High",
-        demand="Low",
-        distance=80.0,
-        transport_cost=100.0,
-        min_quality="Low",
-    )
-    result = evaluate_opportunity(farmer, opp)
-    assert result.spoilage_percentage <= 60.0, (
-        f"Spoilage should be capped at 60%, got {result.spoilage_percentage}%"
-    )
-    print(f"PASS test_spoilage_capped_at_sixty_percent  (got {result.spoilage_percentage}%)")
+def test_channel_net_value_formula_is_correct():
+    strategy = _run_optimal(_input())
+    for ch in strategy.allocations:
+        expected = round(ch.gross_revenue - ch.transport_cost - ch.spoilage_loss_value, 2)
+        assert abs(ch.net_value - expected) < 0.01
 
 
-# ---------------------------------------------------------------------------
-# Test 12: Determinism — same inputs always give same output
-# ---------------------------------------------------------------------------
-def test_determinism():
-    farmer = make_farmer(quality="Standard", quantity=400.0, shelf_life_days=6)
-    opp    = make_opp()
-    r1 = evaluate_opportunity(farmer, opp)
-    r2 = evaluate_opportunity(farmer, opp)
-    assert r1.expected_net_value == r2.expected_net_value, "Engine must be deterministic"
-    assert r1.spoilage_percentage == r2.spoilage_percentage
-    print("PASS test_determinism")
+def test_channel_gross_revenue_formula():
+    strategy = _run_optimal(_input())
+    for ch in strategy.allocations:
+        assert abs(ch.gross_revenue - round(ch.quantity_kg * ch.price_per_kg, 2)) < 0.01
 
 
-# ---------------------------------------------------------------------------
-# Run all tests
-# ---------------------------------------------------------------------------
-if __name__ == "__main__":
-    tests = [
-        test_quality_gate_fail,
-        test_quality_gate_pass,
-        test_quantity_capped_at_capacity,
-        test_quantity_uses_farmer_stock,
-        test_gross_revenue_formula,
-        test_net_value_formula,
-        test_shelf_life_increases_spoilage,
-        test_distance_increases_spoilage,
-        test_nearby_low_price_beats_distant_high_price,
-        test_engine_sorts_by_net_value,
-        test_spoilage_capped_at_sixty_percent,
-        test_determinism,
-    ]
+def test_all_channel_net_values_positive():
+    strategy = _run_optimal(_input())
+    for ch in strategy.allocations:
+        assert ch.net_value > 0
 
-    print("=" * 60)
-    print("Farm2Value Decision Engine — Automated Tests")
-    print("=" * 60)
-    passed = 0
-    failed = 0
-    for t in tests:
-        try:
-            t()
-            passed += 1
-        except AssertionError as e:
-            print(f"FAIL {t.__name__}: {e}")
-            failed += 1
-        except Exception as e:
-            print(f"ERROR {t.__name__}: {e}")
-            failed += 1
 
-    print("=" * 60)
-    print(f"Results: {passed} passed, {failed} failed out of {len(tests)} tests")
-    print("=" * 60)
-    if failed:
-        sys.exit(1)
+def test_total_net_value_equals_sum_of_channels():
+    strategy = _run_optimal(_input())
+    computed = round(sum(ch.net_value for ch in strategy.allocations), 2)
+    assert abs(strategy.total_net_value - computed) < 0.01
+
+
+def test_short_shelf_life_increases_spoilage():
+    normal_sp = _effective_spoilage_pct(5.0, shelf_life_days=10)
+    urgent_sp = _effective_spoilage_pct(5.0, shelf_life_days=2)
+    assert urgent_sp > normal_sp
+
+
+def test_spoilage_capped_at_30_percent():
+    assert _effective_spoilage_pct(30.0, shelf_life_days=1) <= 30.0
+
+
+def test_quality_multipliers():
+    m = MARKETS[0]
+    assert _true_net_per_kg(m, QUALITY_MULTIPLIER["Premium"], 10) > _true_net_per_kg(m, QUALITY_MULTIPLIER["Standard"], 10)
+    assert _true_net_per_kg(m, QUALITY_MULTIPLIER["Standard"], 10) > _true_net_per_kg(m, QUALITY_MULTIPLIER["Low"], 10)
+
+
+def test_quick_cash_strategy_penalises_high_transport_markets():
+    """Quick-cash strategy should favour local markets over distant ones."""
+    data = _input(quantity_kg=10000)  # large enough to fill all markets
+    qm = QUALITY_MULTIPLIER[data.quality]
+    cfg = next(c for c in ALLOCATION_STRATEGIES if c["id"] == "quick_cash")
+
+    raw = _solve_strategy(data.quantity_kg, MARKETS, qm, data.shelf_life_days, 5.0, 1.0)
+    strategy = _build_strategy(data, cfg, qm, raw)
+
+    # Hyderabad Metro has transport_cost_per_kg=3.5 — the highest.
+    # Local Mandi has transport_cost_per_kg=0.5 — the lowest.
+    alloc = {ch.market_name: ch.quantity_kg for ch in strategy.allocations}
+    local_mandi_qty = alloc.get("Local Mandi", 0)
+    hyderabad_qty = alloc.get("Hyderabad Metro Market", 0)
+    # With 5x transport penalty Hyderabad's score goes very low; local gets more
+    assert local_mandi_qty >= hyderabad_qty
+
+
+def test_min_risk_strategy_avoids_high_spoilage_markets():
+    """
+    With 5x spoilage weight, the LP should fill low-spoilage markets first
+    and avoid the highest-spoilage market (Hyderabad Metro, 8%) when enough
+    low-spoilage capacity exists to satisfy the farmer's quantity.
+
+    With quantity_kg=5000:
+      - FreshLink (2% sp, cap 300) fills first  → 300 kg
+      - FreezeMart (1% sp, cap 10000) fills next → 4700 kg
+      Total = 5000 — Hyderabad should receive 0.
+    """
+    data = _input(quantity_kg=5000)
+    qm = QUALITY_MULTIPLIER[data.quality]
+    cfg = next(c for c in ALLOCATION_STRATEGIES if c["id"] == "min_risk")
+
+    raw = _solve_strategy(data.quantity_kg, MARKETS, qm, data.shelf_life_days, 1.0, 5.0)
+    strategy = _build_strategy(data, cfg, qm, raw)
+
+    alloc = {ch.market_name: ch.quantity_kg for ch in strategy.allocations}
+    # Hyderabad Metro (8% spoilage) should be skipped entirely
+    assert alloc.get("Hyderabad Metro Market", 0) == 0
+    # FreezeMart and FreshLink (lowest spoilage) should receive allocations
+    assert alloc.get("FreezeMart Cold Storage", 0) > 0
+    assert alloc.get("FreshLink Retail Aggregator", 0) > 0
+
+
+def test_hackathon_demo_onion_400kg():
+    """End-to-end check for the demo scenario."""
+    data = _input(crop="onion", quantity_kg=400, quality="Standard",
+                  farmer_location="Vijayawada", harvest_date="18/09/2026", shelf_life_days=5)
+    strategy = _run_optimal(data)
+
+    assert strategy.total_quantity_allocated <= 400.01
+    assert strategy.total_net_value > 0
+    assert len(strategy.allocations) >= 1
+    # Multi-channel should split across at least 2 markets for 400 kg
+    assert len(strategy.allocations) >= 2
