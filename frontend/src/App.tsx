@@ -59,6 +59,29 @@ interface Market {
   location: string;
 }
 
+interface PlanResult {
+  plan_label: string;
+  plan_name: string;
+  plan_description: string;
+  plan_tradeoff: string;
+  allocations: ChannelAllocation[];
+  total_quantity_allocated: number;
+  total_gross_revenue: number;
+  total_transport_cost: number;
+  total_spoilage_loss_value: number;
+  total_net_value: number;
+}
+
+interface PlansResponse {
+  crop: string;
+  quantity_kg: number;
+  quality: string;
+  farmer_location: string;
+  plan_a: PlanResult;
+  plan_b: PlanResult;
+  plan_c: PlanResult;
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function fmt(n: number): string {
@@ -271,6 +294,110 @@ function PlanColumn({ plan, label, accent }: { plan: WhatIfPlan; label: string; 
   );
 }
 
+// ── Plan A / B / C card ───────────────────────────────────────────────────────
+
+const PLAN_COLORS: Record<string, { badge: string; accent: string; border: string }> = {
+  A: { badge: 'bg-green-600', accent: 'text-green-700', border: 'border-green-200' },
+  B: { badge: 'bg-blue-600',  accent: 'text-blue-700',  border: 'border-blue-200'  },
+  C: { badge: 'bg-orange-500', accent: 'text-orange-600', border: 'border-orange-200' },
+};
+
+function PlanCard({ plan }: { plan: PlanResult }) {
+  const [expanded, setExpanded] = useState(false);
+  const colors = PLAN_COLORS[plan.plan_label] ?? PLAN_COLORS['A'];
+
+  return (
+    <div className={`bg-white rounded-2xl border shadow-sm overflow-hidden ${colors.border}`}>
+      <div className="px-6 pt-5 pb-5">
+        <div className="flex items-center gap-2 mb-1">
+          <span className={`text-xs font-bold text-white px-2.5 py-0.5 rounded-full tracking-wide ${colors.badge}`}>
+            PLAN {plan.plan_label}
+          </span>
+          <span className="text-sm font-bold text-gray-900">{plan.plan_name}</span>
+        </div>
+        <p className="text-xs text-gray-500 mb-4">{plan.plan_description}</p>
+
+        <div className="space-y-2 mb-4">
+          {plan.allocations.map((ch) => (
+            <div key={ch.market_name} className="flex items-center gap-3">
+              <span className="text-xs font-semibold text-gray-800 tabular-nums w-16 text-right flex-shrink-0">
+                {ch.quantity_kg} kg
+              </span>
+              <span className="text-gray-300">→</span>
+              <div className="flex-1 min-w-0">
+                <span className="text-xs font-medium text-gray-900">{ch.market_name}</span>
+                <span className="text-xs text-gray-400 ml-1">({ch.location})</span>
+              </div>
+              <span className={`text-xs font-semibold tabular-nums flex-shrink-0 ${colors.accent}`}>
+                {fmt(ch.net_value)}
+              </span>
+            </div>
+          ))}
+        </div>
+
+        <div className="flex items-center justify-between pt-3 border-t border-gray-100">
+          <span className="text-xs text-gray-400">{plan.total_quantity_allocated} kg · {plan.allocations.length} market{plan.allocations.length !== 1 ? 's' : ''}</span>
+          <div className="text-right">
+            <span className="text-xs text-gray-400 mr-1">Net value</span>
+            <span className={`text-base font-bold ${colors.accent}`}>{fmt(plan.total_net_value)}</span>
+          </div>
+        </div>
+
+        <div className="mt-3 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2 text-xs text-amber-800">
+          ⚡ {plan.plan_tradeoff}
+        </div>
+      </div>
+
+      <button
+        onClick={() => setExpanded((v) => !v)}
+        className="w-full px-6 py-2.5 text-xs text-gray-400 hover:text-gray-600 bg-gray-50 border-t border-gray-100 flex items-center justify-center gap-1 transition-colors"
+      >
+        {expanded ? '▲ Hide breakdown' : '▼ Show full breakdown'}
+      </button>
+
+      {expanded && (
+        <div className="px-6 pb-5 bg-gray-50 border-t border-gray-100">
+          <table className="w-full text-xs mt-3">
+            <thead>
+              <tr className="text-gray-400 border-b border-gray-200">
+                <th className="text-left pb-2 font-medium">Channel</th>
+                <th className="text-right pb-2 font-medium">Qty</th>
+                <th className="text-right pb-2 font-medium">₹/kg</th>
+                <th className="text-right pb-2 font-medium">Gross</th>
+                <th className="text-right pb-2 font-medium">Transport</th>
+                <th className="text-right pb-2 font-medium">Spoilage</th>
+                <th className="text-right pb-2 font-medium">Net</th>
+              </tr>
+            </thead>
+            <tbody>
+              {plan.allocations.map((ch) => (
+                <tr key={ch.market_name} className="border-b border-gray-100 last:border-0">
+                  <td className="py-2 text-gray-700 font-medium">{ch.market_name}</td>
+                  <td className="py-2 text-right text-gray-600 tabular-nums">{ch.quantity_kg}</td>
+                  <td className="py-2 text-right text-gray-600 tabular-nums">₹{ch.price_per_kg}</td>
+                  <td className="py-2 text-right text-gray-600 tabular-nums">{fmt(ch.gross_revenue)}</td>
+                  <td className="py-2 text-right text-red-400 tabular-nums">−{fmt(ch.transport_cost)}</td>
+                  <td className="py-2 text-right text-red-400 tabular-nums">−{fmt(ch.spoilage_loss_value)}</td>
+                  <td className={`py-2 text-right font-semibold tabular-nums ${colors.accent}`}>{fmt(ch.net_value)}</td>
+                </tr>
+              ))}
+              <tr className="font-semibold text-gray-800 bg-white">
+                <td className="pt-3 pb-1">Total</td>
+                <td className="pt-3 pb-1 text-right tabular-nums">{plan.total_quantity_allocated}</td>
+                <td />
+                <td className="pt-3 pb-1 text-right tabular-nums">{fmt(plan.total_gross_revenue)}</td>
+                <td className="pt-3 pb-1 text-right text-red-400 tabular-nums">−{fmt(plan.total_transport_cost)}</td>
+                <td className="pt-3 pb-1 text-right text-red-400 tabular-nums">−{fmt(plan.total_spoilage_loss_value)}</td>
+                <td className={`pt-3 pb-1 text-right tabular-nums ${colors.accent}`}>{fmt(plan.total_net_value)}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Main App ──────────────────────────────────────────────────────────────────
 
 export default function App() {
@@ -288,6 +415,9 @@ export default function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [apiError, setApiError] = useState<string | null>(null);
   const [results, setResults] = useState<OptimizeResponse | null>(null);
+
+  // Plans A/B/C state
+  const [plansResult, setPlansResult] = useState<PlansResponse | null>(null);
 
   // What-If state
   const [markets, setMarkets] = useState<Market[]>([]);
@@ -319,6 +449,7 @@ export default function App() {
     setHarvestDate('');
     setApiError(null);
     setResults(null);
+    setPlansResult(null);
     setWiResult(null);
     setWiTransport(0);
     setWiPrice(0);
@@ -342,26 +473,39 @@ export default function App() {
     setIsLoading(true);
     setApiError(null);
 
+    const payload = {
+      crop,
+      quantity_kg: parseFloat(quantity),
+      quality,
+      farmer_location: farmerLocation,
+      harvest_date: harvestDate,
+      shelf_life_days: parseInt(shelfLife, 10),
+    };
+
     try {
-      const response = await fetch('/api/decision/optimize', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          crop,
-          quantity_kg: parseFloat(quantity),
-          quality,
-          farmer_location: farmerLocation,
-          harvest_date: harvestDate,
-          shelf_life_days: parseInt(shelfLife, 10),
+      const [optimizeRes, plansRes] = await Promise.all([
+        fetch('/api/decision/optimize', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
         }),
-      });
+        fetch('/api/decision/plans', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        }),
+      ]);
 
-      if (!response.ok) {
-        throw new Error(`Server error: ${response.status}`);
-      }
+      if (!optimizeRes.ok) throw new Error(`Server error: ${optimizeRes.status}`);
+      if (!plansRes.ok) throw new Error(`Plans error: ${plansRes.status}`);
 
-      const data: OptimizeResponse = await response.json();
-      setResults(data);
+      const [optData, plansData]: [OptimizeResponse, PlansResponse] = await Promise.all([
+        optimizeRes.json(),
+        plansRes.json(),
+      ]);
+
+      setResults(optData);
+      setPlansResult(plansData);
       setWiResult(null);
       setView('results');
     } catch (err) {
@@ -639,6 +783,44 @@ export default function App() {
                     <StrategyCard key={alt.strategy_name} strategy={alt} isRecommended={false} />
                   ))}
                 </div>
+              </div>
+            )}
+
+            {/* ── PLAN A / B / C ── */}
+            {plansResult && (
+              <div className="space-y-4">
+                <div className="flex items-center gap-3">
+                  <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-widest">
+                    Selling Strategies
+                  </h3>
+                  <span className="text-xs text-gray-300">Plan A · B · C</span>
+                </div>
+
+                {/* Comparison mini-table */}
+                <div className="grid grid-cols-3 gap-3">
+                  {([plansResult.plan_a, plansResult.plan_b, plansResult.plan_c] as PlanResult[]).map((plan) => {
+                    const colors = PLAN_COLORS[plan.plan_label] ?? PLAN_COLORS['A'];
+                    return (
+                      <div key={plan.plan_label} className={`bg-white border rounded-xl p-3 text-center ${colors.border}`}>
+                        <div className={`text-[10px] font-bold uppercase tracking-widest mb-0.5 ${colors.accent}`}>
+                          Plan {plan.plan_label}
+                        </div>
+                        <div className="text-[10px] text-gray-500 mb-2 leading-tight">{plan.plan_name}</div>
+                        <div className={`text-sm font-bold tabular-nums ${colors.accent}`}>
+                          {fmt(plan.total_net_value)}
+                        </div>
+                        <div className="text-[10px] text-gray-400 mt-0.5">
+                          {plan.total_quantity_allocated} kg · {plan.allocations.length} mkt{plan.allocations.length !== 1 ? 's' : ''}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Individual plan cards */}
+                <PlanCard plan={plansResult.plan_a} />
+                <PlanCard plan={plansResult.plan_b} />
+                <PlanCard plan={plansResult.plan_c} />
               </div>
             )}
 

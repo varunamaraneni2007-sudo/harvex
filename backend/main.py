@@ -613,6 +613,158 @@ def whatif(req: WhatIfRequest) -> WhatIfResponse:
     )
 
 
+# ── /api/decision/plans (Plan A / B / C) ─────────────────────────────────────
+
+class PlanResult(BaseModel):
+    plan_label: str           # "A", "B", "C"
+    plan_name: str
+    plan_description: str
+    plan_tradeoff: str
+    allocations: List[ChannelAllocation]
+    total_quantity_allocated: float
+    total_gross_revenue: float
+    total_transport_cost: float
+    total_spoilage_loss_value: float
+    total_net_value: float
+
+
+class PlansResponse(BaseModel):
+    crop: str
+    quantity_kg: float
+    quality: str
+    farmer_location: str
+    plan_a: PlanResult
+    plan_b: PlanResult
+    plan_c: PlanResult
+
+
+def _plan_b_allocate(quantity_kg: float, markets: List[dict], quality_mult: float, shelf_life_days: int) -> List[float]:
+    """Diversified greedy: cap each viable market at 60 % of total quantity to spread risk."""
+    viable_count = sum(
+        1 for m in markets if _true_net_per_kg(m, quality_mult, shelf_life_days) > 0
+    )
+    if viable_count < 2:
+        return _greedy_allocate(quantity_kg, markets, quality_mult, shelf_life_days)
+
+    max_per_market = quantity_kg * 0.6
+    modified = [
+        {**m, "capacity_kg": min(m["capacity_kg"], max_per_market)}
+        if _true_net_per_kg(m, quality_mult, shelf_life_days) > 0
+        else m
+        for m in markets
+    ]
+    return _greedy_allocate(quantity_kg, modified, quality_mult, shelf_life_days)
+
+
+def _plan_c_allocate(quantity_kg: float, markets: List[dict], quality_mult: float, shelf_life_days: int) -> List[float]:
+    """Quick-sale greedy: penalise transport cost 5× to favour nearby buyers."""
+    TRANSPORT_WEIGHT = 5.0
+    indexed = []
+    for i, m in enumerate(markets):
+        if _true_net_per_kg(m, quality_mult, shelf_life_days) <= 0:
+            continue
+        price = m["base_price_per_kg"] * quality_mult
+        sp = _effective_spoilage_pct(m["base_spoilage_pct"], shelf_life_days)
+        score = price * (1 - sp / 100) - m["transport_cost_per_kg"] * TRANSPORT_WEIGHT
+        indexed.append((i, score, m["capacity_kg"]))
+    indexed.sort(key=lambda t: t[1], reverse=True)
+
+    allocations = [0.0] * len(markets)
+    remaining = quantity_kg
+    for idx, _score, cap in indexed:
+        if remaining <= 0:
+            break
+        alloc = min(remaining, cap)
+        allocations[idx] = round(alloc, 2)
+        remaining -= alloc
+    return allocations
+
+
+def _build_plan_result(
+    plan_label: str,
+    plan_name: str,
+    plan_description: str,
+    plan_tradeoff: str,
+    markets: List[dict],
+    raw: List[float],
+    quality_mult: float,
+    shelf_life_days: int,
+) -> PlanResult:
+    channels: List[ChannelAllocation] = []
+    for m, qty in zip(markets, raw):
+        if qty < 0.01:
+            continue
+        price = round(m["base_price_per_kg"] * quality_mult, 2)
+        sp = _effective_spoilage_pct(m["base_spoilage_pct"], shelf_life_days)
+        gross = round(qty * price, 2)
+        transport = round(qty * m["transport_cost_per_kg"], 2)
+        spoilage_qty = round(qty * sp / 100, 2)
+        spoilage_val = round(spoilage_qty * price, 2)
+        net = round(gross - transport - spoilage_val, 2)
+        channels.append(ChannelAllocation(
+            market_name=m["market_name"],
+            location=m["location"],
+            quantity_kg=qty,
+            price_per_kg=price,
+            gross_revenue=gross,
+            transport_cost=transport,
+            spoilage_loss_kg=spoilage_qty,
+            spoilage_loss_value=spoilage_val,
+            net_value=net,
+        ))
+    channels.sort(key=lambda c: c.net_value, reverse=True)
+    return PlanResult(
+        plan_label=plan_label,
+        plan_name=plan_name,
+        plan_description=plan_description,
+        plan_tradeoff=plan_tradeoff,
+        allocations=channels,
+        total_quantity_allocated=round(sum(c.quantity_kg for c in channels), 2),
+        total_gross_revenue=round(sum(c.gross_revenue for c in channels), 2),
+        total_transport_cost=round(sum(c.transport_cost for c in channels), 2),
+        total_spoilage_loss_value=round(sum(c.spoilage_loss_value for c in channels), 2),
+        total_net_value=round(sum(c.net_value for c in channels), 2),
+    )
+
+
+@app.post("/api/decision/plans")
+def plans(data: ProduceInput) -> PlansResponse:
+    quality_mult = QUALITY_MULTIPLIER.get(data.quality, 1.0)
+
+    raw_a = _greedy_allocate(data.quantity_kg, MARKETS, quality_mult, data.shelf_life_days)
+    raw_b = _plan_b_allocate(data.quantity_kg, MARKETS, quality_mult, data.shelf_life_days)
+    raw_c = _plan_c_allocate(data.quantity_kg, MARKETS, quality_mult, data.shelf_life_days)
+
+    plan_a = _build_plan_result(
+        "A", "Primary Plan",
+        "Allocates your harvest to maximise total expected net value across all buyers.",
+        "Concentrates volume in the highest-value market — risk if that buyer cancels.",
+        MARKETS, raw_a, quality_mult, data.shelf_life_days,
+    )
+    plan_b = _build_plan_result(
+        "B", "Lower-Risk Plan",
+        "Spreads the harvest across more buyers to reduce dependence on any single market.",
+        "Net value may be slightly lower than Plan A, but protects against buyer failure.",
+        MARKETS, raw_b, quality_mult, data.shelf_life_days,
+    )
+    plan_c = _build_plan_result(
+        "C", "Quick-Sale Plan",
+        "Prioritises nearby, low-transport-cost buyers for a faster cash turnaround.",
+        "May yield less net value than Plan A, but reduces transit time and logistics risk.",
+        MARKETS, raw_c, quality_mult, data.shelf_life_days,
+    )
+
+    return PlansResponse(
+        crop=data.crop,
+        quantity_kg=data.quantity_kg,
+        quality=data.quality,
+        farmer_location=data.farmer_location,
+        plan_a=plan_a,
+        plan_b=plan_b,
+        plan_c=plan_c,
+    )
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
