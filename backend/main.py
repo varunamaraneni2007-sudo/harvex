@@ -910,6 +910,7 @@ def distances(farmer_location: str = Query(..., description="Farmer's location")
             "market_name": m["market_name"],
             "location": m["location"],
             "distance_km": m.get("distance_km"),
+            "travel_time_minutes": m.get("travel_time_minutes"),
             "transport_cost_per_kg": m["transport_cost_per_kg"],
             "maps_live": m.get("distance_km") is not None,
         }

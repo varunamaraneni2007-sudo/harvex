@@ -59,6 +59,15 @@ interface Market {
   location: string;
 }
 
+interface DistanceInfo {
+  market_name: string;
+  location: string;
+  distance_km: number | null;
+  travel_time_minutes: number | null;
+  transport_cost_per_kg: number;
+  maps_live: boolean;
+}
+
 interface PlanResult {
   plan_label: string;
   plan_name: string;
@@ -106,6 +115,31 @@ function deltaSign(d: number): string {
   return '';
 }
 
+function fmtTime(minutes: number): string {
+  if (minutes < 60) return `${Math.round(minutes)} min`;
+  const h = Math.floor(minutes / 60);
+  const m = Math.round(minutes % 60);
+  return m > 0 ? `${h}h ${m}min` : `${h}h`;
+}
+
+function DistanceBadge({
+  marketName,
+  distances,
+}: {
+  marketName: string;
+  distances: Map<string, DistanceInfo>;
+}) {
+  const d = distances.get(marketName);
+  if (!d?.maps_live || d.distance_km === null) return null;
+  const parts: string[] = [`${d.distance_km} km`];
+  if (d.travel_time_minutes !== null) parts.push(fmtTime(d.travel_time_minutes));
+  return (
+    <span className="text-[10px] text-blue-400 ml-1 tabular-nums whitespace-nowrap">
+      · {parts.join(' · ')}
+    </span>
+  );
+}
+
 type View = 'home' | 'form' | 'results';
 
 // ── Strategy card ─────────────────────────────────────────────────────────────
@@ -113,9 +147,11 @@ type View = 'home' | 'form' | 'results';
 function StrategyCard({
   strategy,
   isRecommended,
+  distances,
 }: {
   strategy: AllocationStrategy;
   isRecommended: boolean;
+  distances: Map<string, DistanceInfo>;
 }) {
   const [expanded, setExpanded] = useState(false);
 
@@ -160,6 +196,7 @@ function StrategyCard({
                   {ch.market_name}
                 </span>
                 <span className="text-xs text-gray-400 ml-1">({ch.location})</span>
+                <DistanceBadge marketName={ch.market_name} distances={distances} />
               </div>
               <span
                 className={`font-semibold text-green-700 flex-shrink-0 tabular-nums ${
@@ -309,7 +346,7 @@ const PLAN_COLORS: Record<string, { badge: string; accent: string; border: strin
   C: { badge: 'bg-orange-500', accent: 'text-orange-600', border: 'border-orange-200' },
 };
 
-function PlanCard({ plan }: { plan: PlanResult }) {
+function PlanCard({ plan, distances }: { plan: PlanResult; distances: Map<string, DistanceInfo> }) {
   const [expanded, setExpanded] = useState(false);
   const colors = PLAN_COLORS[plan.plan_label] ?? PLAN_COLORS['A'];
 
@@ -334,6 +371,7 @@ function PlanCard({ plan }: { plan: PlanResult }) {
               <div className="flex-1 min-w-0">
                 <span className="text-xs font-medium text-gray-900">{ch.market_name}</span>
                 <span className="text-xs text-gray-400 ml-1">({ch.location})</span>
+                <DistanceBadge marketName={ch.market_name} distances={distances} />
               </div>
               <span className={`text-xs font-semibold tabular-nums flex-shrink-0 ${colors.accent}`}>
                 {fmt(ch.net_value)}
@@ -427,6 +465,10 @@ export default function App() {
   const [plansResult, setPlansResult] = useState<PlansResponse | null>(null);
   const [decisionSaved, setDecisionSaved] = useState(false);
 
+  // Distance data (fetched non-blocking after submission)
+  const [distances, setDistances] = useState<Map<string, DistanceInfo>>(new Map());
+  const [mapsLive, setMapsLive] = useState<boolean | null>(null);
+
   // What-If state
   const [markets, setMarkets] = useState<Market[]>([]);
   const [wiTransport, setWiTransport] = useState(0);
@@ -459,6 +501,8 @@ export default function App() {
     setResults(null);
     setPlansResult(null);
     setDecisionSaved(false);
+    setDistances(new Map());
+    setMapsLive(null);
     setWiResult(null);
     setWiTransport(0);
     setWiPrice(0);
@@ -506,6 +550,15 @@ export default function App() {
       setDecisionSaved(data.saved);
       setWiResult(null);
       setView('results');
+
+      // Fetch road distances non-blocking — doesn't delay the results view
+      fetch(`/api/distances?farmer_location=${encodeURIComponent(farmerLocation)}`)
+        .then((r) => r.json())
+        .then((dists: DistanceInfo[]) => {
+          setDistances(new Map(dists.map((d) => [d.market_name, d])));
+          setMapsLive(dists.some((d) => d.maps_live));
+        })
+        .catch(() => { /* non-critical — fallback display handles absence */ });
     } catch (err) {
       setApiError(
         err instanceof Error
@@ -763,6 +816,16 @@ export default function App() {
                     ✓ Decision saved
                   </span>
                 )}
+                {mapsLive === true && (
+                  <span className="bg-blue-50 border border-blue-200 text-blue-600 rounded-full px-3 py-1 font-medium">
+                    🗺 Live road distances
+                  </span>
+                )}
+                {mapsLive === false && (
+                  <span className="bg-gray-50 border border-gray-200 text-gray-400 rounded-full px-3 py-1">
+                    🗺 Estimated distances
+                  </span>
+                )}
               </div>
             </div>
 
@@ -772,7 +835,7 @@ export default function App() {
                 No viable market allocation found for this produce.
               </div>
             ) : (
-              <StrategyCard strategy={results.recommended} isRecommended />
+              <StrategyCard strategy={results.recommended} isRecommended distances={distances} />
             )}
 
             {/* Alternative strategies */}
@@ -783,7 +846,7 @@ export default function App() {
                 </h3>
                 <div className="space-y-4">
                   {results.alternatives.map((alt) => (
-                    <StrategyCard key={alt.strategy_name} strategy={alt} isRecommended={false} />
+                    <StrategyCard key={alt.strategy_name} strategy={alt} isRecommended={false} distances={distances} />
                   ))}
                 </div>
               </div>
@@ -821,9 +884,9 @@ export default function App() {
                 </div>
 
                 {/* Individual plan cards */}
-                <PlanCard plan={plansResult.plan_a} />
-                <PlanCard plan={plansResult.plan_b} />
-                <PlanCard plan={plansResult.plan_c} />
+                <PlanCard plan={plansResult.plan_a} distances={distances} />
+                <PlanCard plan={plansResult.plan_b} distances={distances} />
+                <PlanCard plan={plansResult.plan_c} distances={distances} />
               </div>
             )}
 
