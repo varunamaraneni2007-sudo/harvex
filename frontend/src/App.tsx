@@ -2,26 +2,36 @@ import React, { useState } from 'react';
 
 // ── API Types ─────────────────────────────────────────────────────────────────
 
-interface OpportunityResult {
+interface ChannelAllocation {
   market_name: string;
   location: string;
-  allocated_qty_kg: number;
+  quantity_kg: number;
   price_per_kg: number;
   gross_revenue: number;
   transport_cost: number;
   spoilage_loss_kg: number;
   spoilage_loss_value: number;
   net_value: number;
-  rank: number;
 }
 
-interface RecommendationResponse {
+interface AllocationStrategy {
+  strategy_name: string;
+  strategy_description: string;
+  allocations: ChannelAllocation[];
+  total_quantity_allocated: number;
+  total_gross_revenue: number;
+  total_transport_cost: number;
+  total_spoilage_loss_value: number;
+  total_net_value: number;
+}
+
+interface OptimizeResponse {
   crop: string;
   quantity_kg: number;
   quality: string;
   farmer_location: string;
-  opportunities: OpportunityResult[];
-  summary: string;
+  recommended: AllocationStrategy;
+  alternatives: AllocationStrategy[];
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -31,6 +41,155 @@ function fmt(n: number): string {
 }
 
 type View = 'home' | 'form' | 'results';
+
+// ── Strategy card ─────────────────────────────────────────────────────────────
+
+function StrategyCard({
+  strategy,
+  isRecommended,
+}: {
+  strategy: AllocationStrategy;
+  isRecommended: boolean;
+}) {
+  const [expanded, setExpanded] = useState(false);
+
+  return (
+    <div
+      className={`bg-white rounded-2xl border shadow-sm overflow-hidden ${
+        isRecommended ? 'border-green-300 ring-1 ring-green-200' : 'border-gray-100'
+      }`}
+    >
+      {/* Header */}
+      <div className={`px-6 pt-5 ${isRecommended ? 'pb-0' : 'pb-5'}`}>
+        {isRecommended && (
+          <div className="flex items-center gap-2 mb-2">
+            <span className="text-xs font-bold bg-green-600 text-white px-2.5 py-0.5 rounded-full tracking-wide">
+              RECOMMENDED
+            </span>
+            <span className="text-xs text-gray-400">Harvest Strategy</span>
+          </div>
+        )}
+
+        <h3 className={`font-bold text-gray-900 ${isRecommended ? 'text-lg' : 'text-base'}`}>
+          {strategy.strategy_name}
+        </h3>
+        <p className="text-xs text-gray-500 mt-0.5">{strategy.strategy_description}</p>
+
+        {/* Allocation rows */}
+        <div className={`space-y-2 ${isRecommended ? 'mt-5' : 'mt-4'}`}>
+          {strategy.allocations.map((ch) => (
+            <div key={ch.market_name} className="flex items-center gap-3">
+              <span
+                className={`font-semibold text-gray-800 tabular-nums text-right flex-shrink-0 ${
+                  isRecommended ? 'text-sm w-20' : 'text-xs w-16'
+                }`}
+              >
+                {ch.quantity_kg} kg
+              </span>
+              <span className="text-gray-300 font-bold">→</span>
+              <div className="flex-1 min-w-0">
+                <span
+                  className={`font-medium text-gray-900 ${isRecommended ? 'text-sm' : 'text-xs'}`}
+                >
+                  {ch.market_name}
+                </span>
+                <span className="text-xs text-gray-400 ml-1">({ch.location})</span>
+              </div>
+              <span
+                className={`font-semibold text-green-700 flex-shrink-0 tabular-nums ${
+                  isRecommended ? 'text-sm' : 'text-xs'
+                }`}
+              >
+                {fmt(ch.net_value)}
+              </span>
+            </div>
+          ))}
+        </div>
+
+        {/* Total row */}
+        <div
+          className={`flex items-center justify-between mt-4 pt-4 border-t border-gray-100 ${
+            isRecommended ? 'pb-5' : 'pb-0'
+          }`}
+        >
+          <span className="text-xs text-gray-400">
+            {strategy.total_quantity_allocated} kg allocated
+          </span>
+          <div className="text-right">
+            <span className="text-xs text-gray-400 mr-1">Total Expected Net Value</span>
+            <span
+              className={`font-bold text-green-700 ${isRecommended ? 'text-xl' : 'text-base'}`}
+            >
+              {fmt(strategy.total_net_value)}
+            </span>
+          </div>
+        </div>
+      </div>
+
+      {/* Expandable breakdown (recommended card only) */}
+      {isRecommended && (
+        <>
+          <button
+            onClick={() => setExpanded((v) => !v)}
+            className="w-full px-6 py-2.5 text-xs text-gray-400 hover:text-gray-600 bg-gray-50 border-t border-gray-100 flex items-center justify-center gap-1 transition-colors"
+          >
+            {expanded ? '▲ Hide breakdown' : '▼ Show full breakdown'}
+          </button>
+
+          {expanded && (
+            <div className="px-6 pb-5 bg-gray-50 border-t border-gray-100">
+              <table className="w-full text-xs mt-3">
+                <thead>
+                  <tr className="text-gray-400 border-b border-gray-200">
+                    <th className="text-left pb-2 font-medium">Channel</th>
+                    <th className="text-right pb-2 font-medium">Qty (kg)</th>
+                    <th className="text-right pb-2 font-medium">₹/kg</th>
+                    <th className="text-right pb-2 font-medium">Gross</th>
+                    <th className="text-right pb-2 font-medium">Transport</th>
+                    <th className="text-right pb-2 font-medium">Spoilage</th>
+                    <th className="text-right pb-2 font-medium">Net</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {strategy.allocations.map((ch) => (
+                    <tr key={ch.market_name} className="border-b border-gray-100 last:border-0">
+                      <td className="py-2 text-gray-700 font-medium">{ch.market_name}</td>
+                      <td className="py-2 text-right text-gray-600 tabular-nums">{ch.quantity_kg}</td>
+                      <td className="py-2 text-right text-gray-600 tabular-nums">₹{ch.price_per_kg}</td>
+                      <td className="py-2 text-right text-gray-600 tabular-nums">{fmt(ch.gross_revenue)}</td>
+                      <td className="py-2 text-right text-red-400 tabular-nums">−{fmt(ch.transport_cost)}</td>
+                      <td className="py-2 text-right text-red-400 tabular-nums">−{fmt(ch.spoilage_loss_value)}</td>
+                      <td className="py-2 text-right text-green-700 font-semibold tabular-nums">
+                        {fmt(ch.net_value)}
+                      </td>
+                    </tr>
+                  ))}
+                  <tr className="font-semibold text-gray-800 bg-white">
+                    <td className="pt-3 pb-1">Total</td>
+                    <td className="pt-3 pb-1 text-right tabular-nums">
+                      {strategy.total_quantity_allocated}
+                    </td>
+                    <td />
+                    <td className="pt-3 pb-1 text-right tabular-nums">{fmt(strategy.total_gross_revenue)}</td>
+                    <td className="pt-3 pb-1 text-right text-red-400 tabular-nums">
+                      −{fmt(strategy.total_transport_cost)}
+                    </td>
+                    <td className="pt-3 pb-1 text-right text-red-400 tabular-nums">
+                      −{fmt(strategy.total_spoilage_loss_value)}
+                    </td>
+                    <td className="pt-3 pb-1 text-right text-green-700 tabular-nums">
+                      {fmt(strategy.total_net_value)}
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
 
 // ── Main App ──────────────────────────────────────────────────────────────────
 
@@ -48,7 +207,7 @@ export default function App() {
   // API state
   const [isLoading, setIsLoading] = useState(false);
   const [apiError, setApiError] = useState<string | null>(null);
-  const [results, setResults] = useState<RecommendationResponse | null>(null);
+  const [results, setResults] = useState<OptimizeResponse | null>(null);
 
   const resetAll = () => {
     setCrop('');
@@ -77,7 +236,7 @@ export default function App() {
     setApiError(null);
 
     try {
-      const response = await fetch('/api/recommend', {
+      const response = await fetch('/api/decision/optimize', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -94,7 +253,7 @@ export default function App() {
         throw new Error(`Server error: ${response.status}`);
       }
 
-      const data: RecommendationResponse = await response.json();
+      const data: OptimizeResponse = await response.json();
       setResults(data);
       setView('results');
     } catch (err) {
@@ -272,10 +431,10 @@ export default function App() {
                   {isLoading ? (
                     <>
                       <span className="inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                      Calculating…
+                      Optimising Allocation…
                     </>
                   ) : (
-                    'Find Market Opportunities →'
+                    'Find Best Allocation →'
                   )}
                 </button>
               </div>
@@ -286,16 +445,25 @@ export default function App() {
         {/* ── RESULTS VIEW ── */}
         {view === 'results' && results && (
           <div className="w-full max-w-2xl space-y-6">
-            {/* Summary banner */}
-            <div className="bg-green-50 border border-green-200 rounded-2xl p-6">
+            {/* Context banner */}
+            <div className="bg-green-50 border border-green-200 rounded-2xl p-5">
               <div className="flex items-start justify-between gap-4">
                 <div>
-                  <h2 className="text-xl font-bold text-gray-900 mb-1">Market Opportunities</h2>
-                  <p className="text-sm text-gray-600">{results.summary}</p>
+                  <h2 className="text-lg font-bold text-gray-900 mb-0.5">
+                    Harvest Allocation Plan
+                  </h2>
+                  <p className="text-sm text-gray-500">
+                    Optimised across {(results.recommended.allocations.length +
+                      results.alternatives.reduce((s, a) => s + a.allocations.length, 0) > 0)
+                      ? results.recommended.allocations.length
+                      : 0}{' '}
+                    market channel
+                    {results.recommended.allocations.length !== 1 ? 's' : ''} for maximum value
+                  </p>
                 </div>
                 <span className="text-3xl flex-shrink-0">📊</span>
               </div>
-              <div className="mt-4 flex flex-wrap gap-2 text-xs">
+              <div className="mt-3 flex flex-wrap gap-2 text-xs">
                 <span className="bg-white border border-gray-200 rounded-full px-3 py-1 text-gray-600">
                   🌾 {results.crop}
                 </span>
@@ -311,76 +479,26 @@ export default function App() {
               </div>
             </div>
 
-            {/* Opportunity cards */}
-            {results.opportunities.length === 0 ? (
+            {/* Recommended strategy */}
+            {results.recommended.allocations.length === 0 ? (
               <div className="bg-white border border-gray-100 rounded-2xl p-8 text-center text-gray-500">
-                No viable market opportunities found for this produce.
+                No viable market allocation found for this produce.
               </div>
             ) : (
-              <div className="space-y-4">
-                {results.opportunities.map((opp) => (
-                  <div
-                    key={opp.market_name}
-                    className={`bg-white rounded-2xl border shadow-sm p-5 ${
-                      opp.rank === 1 ? 'border-green-300 ring-1 ring-green-200' : 'border-gray-100'
-                    }`}
-                  >
-                    {/* Card header */}
-                    <div className="flex items-start justify-between mb-3">
-                      <div>
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <span
-                            className={`text-xs font-bold px-2 py-0.5 rounded-full ${
-                              opp.rank === 1
-                                ? 'bg-green-600 text-white'
-                                : 'bg-gray-100 text-gray-600'
-                            }`}
-                          >
-                            #{opp.rank}
-                          </span>
-                          <h3 className="font-semibold text-gray-900">{opp.market_name}</h3>
-                          {opp.rank === 1 && (
-                            <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full font-medium">
-                              Best
-                            </span>
-                          )}
-                        </div>
-                        <p className="text-xs text-gray-500 mt-0.5">📍 {opp.location}</p>
-                      </div>
-                      <div className="text-right flex-shrink-0 ml-4">
-                        <p className="text-lg font-bold text-green-700">{fmt(opp.net_value)}</p>
-                        <p className="text-xs text-gray-400">expected net</p>
-                      </div>
-                    </div>
+              <StrategyCard strategy={results.recommended} isRecommended />
+            )}
 
-                    {/* Metrics grid */}
-                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs pt-3 border-t border-gray-50">
-                      <div>
-                        <p className="text-gray-400 mb-0.5">Price / kg</p>
-                        <p className="font-medium text-gray-800">₹{opp.price_per_kg}</p>
-                      </div>
-                      <div>
-                        <p className="text-gray-400 mb-0.5">Allocated</p>
-                        <p className="font-medium text-gray-800">{opp.allocated_qty_kg} kg</p>
-                      </div>
-                      <div>
-                        <p className="text-gray-400 mb-0.5">Gross Revenue</p>
-                        <p className="font-medium text-gray-800">{fmt(opp.gross_revenue)}</p>
-                      </div>
-                      <div>
-                        <p className="text-gray-400 mb-0.5">Transport</p>
-                        <p className="font-medium text-red-500">−{fmt(opp.transport_cost)}</p>
-                      </div>
-                      <div className="col-span-2">
-                        <p className="text-gray-400 mb-0.5">Spoilage Loss</p>
-                        <p className="font-medium text-red-500">
-                          −{fmt(opp.spoilage_loss_value)}{' '}
-                          <span className="text-gray-400">({opp.spoilage_loss_kg} kg)</span>
-                        </p>
-                      </div>
-                    </div>
-                  </div>
-                ))}
+            {/* Alternative strategies */}
+            {results.alternatives.length > 0 && (
+              <div>
+                <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-widest mb-3 px-1">
+                  Alternative Strategies
+                </h3>
+                <div className="space-y-4">
+                  {results.alternatives.map((alt) => (
+                    <StrategyCard key={alt.strategy_name} strategy={alt} isRecommended={false} />
+                  ))}
+                </div>
               </div>
             )}
 
