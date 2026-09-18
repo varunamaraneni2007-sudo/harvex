@@ -6,10 +6,12 @@ try:
 except ImportError:
     pass
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
+
+from maps_service import enrich_markets_with_distances
 
 from ortools.linear_solver import pywraplp
 
@@ -409,8 +411,8 @@ def _allocation_signature(strategy: AllocationStrategy) -> frozenset:
     )
 
 
-@app.post("/api/decision/optimize")
-def optimize(data: ProduceInput) -> OptimizeResponse:
+def _run_optimize(data: ProduceInput, markets: List[dict]) -> OptimizeResponse:
+    """Core optimizer; accepts any markets list (real-distance or static)."""
     quality_mult = QUALITY_MULTIPLIER.get(data.quality, 1.0)
 
     strategies: List[AllocationStrategy] = []
@@ -419,7 +421,7 @@ def optimize(data: ProduceInput) -> OptimizeResponse:
     for cfg in ALLOCATION_STRATEGIES:
         raw = _solve_strategy(
             data.quantity_kg,
-            MARKETS,
+            markets,
             quality_mult,
             data.shelf_life_days,
             cfg["transport_weight"],
@@ -428,16 +430,13 @@ def optimize(data: ProduceInput) -> OptimizeResponse:
         if raw is None:
             continue
 
-        strategy = _build_strategy(data, cfg, quality_mult, raw)
+        strategy = _build_strategy(data, cfg, quality_mult, raw, markets)
         sig = _allocation_signature(strategy)
 
-        # Keep duplicates only when they come from different named strategies —
-        # drop if both the allocation AND the name already appeared.
         if sig not in seen_signatures:
             seen_signatures.add(sig)
             strategies.append(strategy)
 
-    # Sort so the highest true net value is recommended.
     strategies.sort(key=lambda s: s.total_net_value, reverse=True)
 
     if not strategies:
@@ -468,6 +467,11 @@ def optimize(data: ProduceInput) -> OptimizeResponse:
         recommended=strategies[0],
         alternatives=strategies[1:],
     )
+
+
+@app.post("/api/decision/optimize")
+def optimize(data: ProduceInput) -> OptimizeResponse:
+    return _run_optimize(data, MARKETS)
 
 
 # ── /api/markets ─────────────────────────────────────────────────────────────
@@ -756,31 +760,31 @@ def _build_plan_result(
     )
 
 
-@app.post("/api/decision/plans")
-def plans(data: ProduceInput) -> PlansResponse:
+def _run_plans(data: ProduceInput, markets: List[dict]) -> PlansResponse:
+    """Core plan generator; accepts any markets list (real-distance or static)."""
     quality_mult = QUALITY_MULTIPLIER.get(data.quality, 1.0)
 
-    raw_a = _greedy_allocate(data.quantity_kg, MARKETS, quality_mult, data.shelf_life_days)
-    raw_b = _plan_b_allocate(data.quantity_kg, MARKETS, quality_mult, data.shelf_life_days)
-    raw_c = _plan_c_allocate(data.quantity_kg, MARKETS, quality_mult, data.shelf_life_days)
+    raw_a = _greedy_allocate(data.quantity_kg, markets, quality_mult, data.shelf_life_days)
+    raw_b = _plan_b_allocate(data.quantity_kg, markets, quality_mult, data.shelf_life_days)
+    raw_c = _plan_c_allocate(data.quantity_kg, markets, quality_mult, data.shelf_life_days)
 
     plan_a = _build_plan_result(
         "A", "Primary Plan",
         "Allocates your harvest to maximise total expected net value across all buyers.",
         "Concentrates volume in the highest-value market — risk if that buyer cancels.",
-        MARKETS, raw_a, quality_mult, data.shelf_life_days,
+        markets, raw_a, quality_mult, data.shelf_life_days,
     )
     plan_b = _build_plan_result(
         "B", "Lower-Risk Plan",
         "Spreads the harvest across more buyers to reduce dependence on any single market.",
         "Net value may be slightly lower than Plan A, but protects against buyer failure.",
-        MARKETS, raw_b, quality_mult, data.shelf_life_days,
+        markets, raw_b, quality_mult, data.shelf_life_days,
     )
     plan_c = _build_plan_result(
         "C", "Quick-Sale Plan",
         "Prioritises nearby, low-transport-cost buyers for a faster cash turnaround.",
         "May yield less net value than Plan A, but reduces transit time and logistics risk.",
-        MARKETS, raw_c, quality_mult, data.shelf_life_days,
+        markets, raw_c, quality_mult, data.shelf_life_days,
     )
 
     return PlansResponse(
@@ -792,6 +796,11 @@ def plans(data: ProduceInput) -> PlansResponse:
         plan_b=plan_b,
         plan_c=plan_c,
     )
+
+
+@app.post("/api/decision/plans")
+def plans(data: ProduceInput) -> PlansResponse:
+    return _run_plans(data, MARKETS)
 
 
 # ── /api/submission (persist + return all results) ────────────────────────────
@@ -873,9 +882,11 @@ def _save_to_supabase(
 
 @app.post("/api/submission")
 def submission(data: ProduceInput) -> SubmissionResponse:
-    # Re-use existing endpoint functions; they are pure and deterministic.
-    optimize_resp = optimize(data)
-    plans_resp = plans(data)
+    # Enrich markets with real road distances; falls back to static costs if
+    # the Maps API key is missing or the call fails.
+    markets = enrich_markets_with_distances(data.farmer_location, MARKETS)
+    optimize_resp = _run_optimize(data, markets)
+    plans_resp = _run_plans(data, markets)
     farmer_input_id = _save_to_supabase(data, optimize_resp, plans_resp)
     return SubmissionResponse(
         optimize=optimize_resp,
@@ -883,6 +894,27 @@ def submission(data: ProduceInput) -> SubmissionResponse:
         saved=farmer_input_id is not None,
         farmer_input_id=farmer_input_id,
     )
+
+
+# ── /api/distances (informational — road distances for all markets) ───────────
+
+@app.get("/api/distances")
+def distances(farmer_location: str = Query(..., description="Farmer's location")):
+    """
+    Return road distance and effective transport cost from farmer_location to
+    every market.  distance_km is null when the Maps API is unavailable.
+    """
+    enriched = enrich_markets_with_distances(farmer_location, MARKETS)
+    return [
+        {
+            "market_name": m["market_name"],
+            "location": m["location"],
+            "distance_km": m.get("distance_km"),
+            "transport_cost_per_kg": m["transport_cost_per_kg"],
+            "maps_live": m.get("distance_km") is not None,
+        }
+        for m in enriched
+    ]
 
 
 if __name__ == "__main__":
