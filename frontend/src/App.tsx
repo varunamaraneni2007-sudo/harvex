@@ -43,17 +43,6 @@ interface WhatIfPlan {
   total_net_value: number;
 }
 
-interface WhatIfResponse {
-  crop: string;
-  quantity_kg: number;
-  quality: string;
-  farmer_location: string;
-  scenario_description: string;
-  current_plan: WhatIfPlan;
-  whatif_plan: WhatIfPlan;
-  delta_net_value: number;
-}
-
 interface Market {
   market_name: string;
   location: string;
@@ -96,6 +85,19 @@ interface SubmissionResponse {
   plans: PlansResponse;
   saved: boolean;
   farmer_input_id: string | null;
+  explanation: string | null;
+}
+
+interface WhatIfResponse {
+  crop: string;
+  quantity_kg: number;
+  quality: string;
+  farmer_location: string;
+  scenario_description: string;
+  current_plan: WhatIfPlan;
+  whatif_plan: WhatIfPlan;
+  delta_net_value: number;
+  explanation: string | null;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -465,6 +467,10 @@ export default function App() {
   const [plansResult, setPlansResult] = useState<PlansResponse | null>(null);
   const [decisionSaved, setDecisionSaved] = useState(false);
 
+  // Explanation state
+  const [explanation, setExplanation] = useState<string | null>(null);
+  const [explanationOpen, setExplanationOpen] = useState(false);
+
   // Distance data (fetched non-blocking after submission)
   const [distances, setDistances] = useState<Map<string, DistanceInfo>>(new Map());
   const [mapsLive, setMapsLive] = useState<boolean | null>(null);
@@ -479,6 +485,8 @@ export default function App() {
   const [wiResult, setWiResult] = useState<WhatIfResponse | null>(null);
   const [wiLoading, setWiLoading] = useState(false);
   const [wiError, setWiError] = useState<string | null>(null);
+  const [wiExplanation, setWiExplanation] = useState<string | null>(null);
+  const [wiExplanationOpen, setWiExplanationOpen] = useState(false);
 
   // Fetch markets list when entering results
   useEffect(() => {
@@ -501,9 +509,13 @@ export default function App() {
     setResults(null);
     setPlansResult(null);
     setDecisionSaved(false);
+    setExplanation(null);
+    setExplanationOpen(false);
     setDistances(new Map());
     setMapsLive(null);
     setWiResult(null);
+    setWiExplanation(null);
+    setWiExplanationOpen(false);
     setWiTransport(0);
     setWiPrice(0);
     setWiShelf(0);
@@ -548,6 +560,8 @@ export default function App() {
       setResults(data.optimize);
       setPlansResult(data.plans);
       setDecisionSaved(data.saved);
+      setExplanation(data.explanation ?? null);
+      setExplanationOpen(false);
       setWiResult(null);
       setView('results');
 
@@ -599,6 +613,8 @@ export default function App() {
       if (!response.ok) throw new Error(`Server error: ${response.status}`);
       const data: WhatIfResponse = await response.json();
       setWiResult(data);
+      setWiExplanation(data.explanation ?? null);
+      setWiExplanationOpen(false);
     } catch (err) {
       setWiError(err instanceof Error ? err.message : 'What-If request failed.');
     } finally {
@@ -838,6 +854,27 @@ export default function App() {
               <StrategyCard strategy={results.recommended} isRecommended distances={distances} />
             )}
 
+            {/* AI Explanation */}
+            {explanation && (
+              <div className="bg-white rounded-2xl border border-purple-100 shadow-sm overflow-hidden">
+                <button
+                  onClick={() => setExplanationOpen((v) => !v)}
+                  className="w-full px-6 py-4 flex items-center justify-between gap-3 text-left hover:bg-purple-50/40 transition-colors"
+                >
+                  <div className="flex items-center gap-2">
+                    <span className="text-lg">💡</span>
+                    <span className="text-sm font-semibold text-gray-800">Why this recommendation?</span>
+                  </div>
+                  <span className="text-xs text-purple-400">{explanationOpen ? '▲ Close' : '▼ Read'}</span>
+                </button>
+                {explanationOpen && (
+                  <div className="px-6 pb-5 border-t border-purple-50">
+                    <p className="text-sm text-gray-700 leading-relaxed whitespace-pre-wrap mt-4">{explanation}</p>
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* Alternative strategies */}
             {results.alternatives.length > 0 && (
               <div>
@@ -1061,6 +1098,27 @@ export default function App() {
                         : 'No change in net value.'}
                     </div>
                   </div>
+
+                  {/* What-If AI Explanation */}
+                  {wiExplanation && (
+                    <div className="mt-3 border border-purple-100 rounded-xl overflow-hidden">
+                      <button
+                        onClick={() => setWiExplanationOpen((v) => !v)}
+                        className="w-full px-4 py-3 flex items-center justify-between gap-2 text-left hover:bg-purple-50/40 transition-colors"
+                      >
+                        <div className="flex items-center gap-2">
+                          <span>💡</span>
+                          <span className="text-xs font-semibold text-gray-700">What does this mean?</span>
+                        </div>
+                        <span className="text-[10px] text-purple-400">{wiExplanationOpen ? '▲' : '▼'}</span>
+                      </button>
+                      {wiExplanationOpen && (
+                        <div className="px-4 pb-4 border-t border-purple-50 bg-white">
+                          <p className="text-xs text-gray-700 leading-relaxed whitespace-pre-wrap mt-3">{wiExplanation}</p>
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
             </div>

@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from typing import List, Optional
 
 from maps_service import enrich_markets_with_distances
+from explanation_service import generate_explanation, generate_whatif_explanation
 
 from ortools.linear_solver import pywraplp
 
@@ -517,6 +518,7 @@ class WhatIfResponse(BaseModel):
     current_plan: WhatIfPlan
     whatif_plan: WhatIfPlan
     delta_net_value: float
+    explanation: Optional[str] = None
 
 
 def _greedy_allocate(quantity_kg: float, markets: List[dict], quality_mult: float, shelf_life_days: int) -> List[float]:
@@ -634,7 +636,7 @@ def whatif(req: WhatIfRequest) -> WhatIfResponse:
             total_net_value=0,
         )
 
-    return WhatIfResponse(
+    resp = WhatIfResponse(
         crop=data.crop,
         quantity_kg=data.quantity_kg,
         quality=data.quality,
@@ -644,6 +646,8 @@ def whatif(req: WhatIfRequest) -> WhatIfResponse:
         whatif_plan=whatif_plan,
         delta_net_value=round(whatif_plan.total_net_value - current_plan.total_net_value, 2),
     )
+    resp.explanation = generate_whatif_explanation(req, resp)
+    return resp
 
 
 # ── /api/decision/plans (Plan A / B / C) ─────────────────────────────────────
@@ -810,6 +814,7 @@ class SubmissionResponse(BaseModel):
     plans: PlansResponse
     saved: bool
     farmer_input_id: Optional[str] = None
+    explanation: Optional[str] = None
 
 
 def _save_plan_rows(sb, farmer_input_id: str, plan_name: str, plan) -> None:
@@ -888,11 +893,13 @@ def submission(data: ProduceInput) -> SubmissionResponse:
     optimize_resp = _run_optimize(data, markets)
     plans_resp = _run_plans(data, markets)
     farmer_input_id = _save_to_supabase(data, optimize_resp, plans_resp)
+    explanation = generate_explanation(data, optimize_resp, plans_resp)
     return SubmissionResponse(
         optimize=optimize_resp,
         plans=plans_resp,
         saved=farmer_input_id is not None,
         farmer_input_id=farmer_input_id,
+        explanation=explanation,
     )
 
 
