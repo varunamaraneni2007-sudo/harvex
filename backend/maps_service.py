@@ -1,12 +1,12 @@
 """
-Google Maps Distance Matrix integration.
+Google Routes API integration (v2 — replaces the legacy Distance Matrix API).
 
-Provides real road distances between the farmer's location and each market.
-Falls back gracefully when the API key is missing or the call fails — the
-decision engine always has a usable transport cost.
+Provides real road distances and travel times between the farmer's location
+and each market.  Falls back gracefully when the API key is missing or the
+call fails — the decision engine always has a usable transport cost.
 """
 import os
-from typing import Optional, List
+from typing import Optional, List, Tuple
 
 import httpx
 
@@ -18,8 +18,9 @@ import httpx
 LOCAL_BASE_COST_PER_KG = 0.50   # ₹/kg base loading/handling cost
 KM_RATE_PER_KG = 0.0105         # ₹/kg/km truck freight rate
 
-# In-process cache so repeated submits from the same location are free.
-# Keys are (origin_lower, destination_lower) tuples.
+ROUTES_URL = "https://routes.googleapis.com/directions/v2:computeRoutes"
+
+# In-process cache: (origin_lower, destination_lower) → (distance_km, travel_time_minutes)
 DISTANCE_CACHE: dict = {}
 
 
@@ -28,10 +29,17 @@ def _get_api_key() -> Optional[str]:
     return key if key else None
 
 
-def get_distance_km(origin: str, destination: str) -> Optional[float]:
+def _parse_duration_seconds(duration_str: str) -> float:
+    """Parse Routes API duration string '18000s' → seconds as float."""
+    return float(duration_str.rstrip("s"))
+
+
+def get_route(origin: str, destination: str) -> Optional[Tuple[float, float]]:
     """
-    Return road distance in km between origin and destination, or None if the
-    API key is absent or the request fails. Results are cached in-process.
+    Call the Google Routes API and return (distance_km, travel_time_minutes),
+    or None if the key is absent, no route exists, or the request fails.
+    Results are cached in-process so repeated lookups from the same location
+    are free.
     """
     if not _get_api_key():
         return None
@@ -41,26 +49,40 @@ def get_distance_km(origin: str, destination: str) -> Optional[float]:
         return DISTANCE_CACHE[cache_key]
 
     try:
-        resp = httpx.get(
-            "https://maps.googleapis.com/maps/api/distancematrix/json",
-            params={
-                "origins": origin,
-                "destinations": destination,
-                "mode": "driving",
-                "key": _get_api_key(),
+        resp = httpx.post(
+            ROUTES_URL,
+            headers={
+                "X-Goog-Api-Key": _get_api_key(),
+                "X-Goog-FieldMask": "routes.distanceMeters,routes.duration",
+                "Content-Type": "application/json",
+            },
+            json={
+                "origin": {"address": origin},
+                "destination": {"address": destination},
+                "travelMode": "DRIVE",
+                "routingPreference": "TRAFFIC_UNAWARE",
             },
             timeout=5.0,
         )
         resp.raise_for_status()
         data = resp.json()
-        element = data["rows"][0]["elements"][0]
-        if element.get("status") != "OK":
+        routes = data.get("routes", [])
+        if not routes:
             return None
-        km = round(element["distance"]["value"] / 1000.0, 1)
-        DISTANCE_CACHE[cache_key] = km
-        return km
+        route = routes[0]
+        km = round(route["distanceMeters"] / 1000.0, 1)
+        minutes = round(_parse_duration_seconds(route["duration"]) / 60.0, 1)
+        result: Tuple[float, float] = (km, minutes)
+        DISTANCE_CACHE[cache_key] = result
+        return result
     except Exception:
         return None
+
+
+def get_distance_km(origin: str, destination: str) -> Optional[float]:
+    """Return road distance in km, or None if unavailable."""
+    route = get_route(origin, destination)
+    return route[0] if route is not None else None
 
 
 def transport_cost_from_distance(distance_km: float) -> float:
@@ -71,19 +93,21 @@ def transport_cost_from_distance(distance_km: float) -> float:
 def enrich_markets_with_distances(farmer_location: str, markets: List[dict]) -> List[dict]:
     """
     Return a copy of each market dict, with transport_cost_per_kg updated from
-    a real road-distance lookup where the Maps API is available, plus a
-    distance_km field.  Falls back to the original static transport_cost_per_kg
-    when Maps is unavailable.
+    a real road-distance lookup where the Routes API is available, plus
+    distance_km and travel_time_minutes fields. Falls back to the original
+    static transport_cost_per_kg when the API is unavailable.
     """
     result = []
     for m in markets:
-        distance_km = get_distance_km(farmer_location, m["location"])
-        if distance_km is not None:
+        route = get_route(farmer_location, m["location"])
+        if route is not None:
+            distance_km, travel_time_minutes = route
             result.append({
                 **m,
                 "transport_cost_per_kg": transport_cost_from_distance(distance_km),
                 "distance_km": distance_km,
+                "travel_time_minutes": travel_time_minutes,
             })
         else:
-            result.append({**m, "distance_km": None})
+            result.append({**m, "distance_km": None, "travel_time_minutes": None})
     return result
