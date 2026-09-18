@@ -48,6 +48,27 @@ interface Market {
   location: string;
 }
 
+interface MarketCard {
+  market_name: string;
+  buyer_type: string;
+  location: string;
+  base_price_per_kg: number;
+  effective_price_per_kg: number | null;
+  transport_cost_per_kg: number;
+  capacity_kg: number;
+  base_spoilage_pct: number;
+  effective_spoilage_pct: number | null;
+  distance_km: number | null;
+  travel_time_minutes: number | null;
+  maps_live: boolean;
+  accepted_crops: string[];
+  min_quality: string;
+  suitability: 'Suitable' | 'Partial' | 'Not Suitable' | 'Unknown';
+  suitability_reason: string;
+  net_value_per_kg: number | null;
+  total_net_value: number | null;
+}
+
 interface DistanceInfo {
   market_name: string;
   location: string;
@@ -142,7 +163,7 @@ function DistanceBadge({
   );
 }
 
-type View = 'home' | 'form' | 'results';
+type View = 'home' | 'form' | 'results' | 'marketplace';
 
 // ── Strategy card ─────────────────────────────────────────────────────────────
 
@@ -445,6 +466,215 @@ function PlanCard({ plan, distances }: { plan: PlanResult; distances: Map<string
   );
 }
 
+// ── Marketplace: Buyer Card ───────────────────────────────────────────────────
+
+const BUYER_TYPE_STYLE: Record<string, string> = {
+  'Local Mandi':     'bg-orange-100 text-orange-700',
+  'Wholesale Buyer': 'bg-blue-100 text-blue-700',
+  'Retail Chain':    'bg-purple-100 text-purple-700',
+  'Cold Storage':    'bg-teal-100 text-teal-700',
+  'Processing Unit': 'bg-indigo-100 text-indigo-700',
+};
+
+function BuyerCard({
+  card,
+  expanded,
+  onToggleExpand,
+  onUseInPlan,
+  hasResults,
+}: {
+  card: MarketCard;
+  expanded: boolean;
+  onToggleExpand: () => void;
+  onUseInPlan: () => void;
+  hasResults: boolean;
+}) {
+  const suitStyle =
+    card.suitability === 'Suitable'
+      ? 'text-green-700 bg-green-50 border-green-200'
+      : card.suitability === 'Partial'
+      ? 'text-amber-700 bg-amber-50 border-amber-200'
+      : card.suitability === 'Not Suitable'
+      ? 'text-red-600 bg-red-50 border-red-200'
+      : 'text-gray-500 bg-gray-50 border-gray-200';
+
+  const suitIcon =
+    card.suitability === 'Suitable' ? '✓' :
+    card.suitability === 'Partial' ? '⚡' : '✗';
+
+  const suitLabel =
+    card.suitability === 'Suitable' ? 'Suitable' :
+    card.suitability === 'Partial' ? 'Limited' :
+    card.suitability === 'Not Suitable' ? 'Not Suitable' : 'Unknown';
+
+  const borderColor =
+    card.suitability === 'Suitable' ? 'border-gray-100' :
+    card.suitability === 'Partial' ? 'border-amber-100' :
+    card.suitability === 'Not Suitable' ? 'border-red-100 opacity-80' :
+    'border-gray-100';
+
+  const typeStyle = BUYER_TYPE_STYLE[card.buyer_type] || 'bg-gray-100 text-gray-600';
+  const displayPrice = card.effective_price_per_kg ?? card.base_price_per_kg;
+
+  return (
+    <div className={`bg-white rounded-2xl border shadow-sm overflow-hidden ${borderColor}`}>
+      <div className="px-5 pt-5 pb-4">
+        {/* Header row */}
+        <div className="flex items-start justify-between gap-3 mb-2">
+          <div>
+            <h3 className="font-bold text-gray-900 text-base leading-snug">{card.market_name}</h3>
+            <div className="flex items-center gap-2 mt-1 flex-wrap">
+              <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${typeStyle}`}>
+                {card.buyer_type}
+              </span>
+              <span className="text-xs text-gray-400">📍 {card.location}</span>
+            </div>
+          </div>
+          <span className={`text-[10px] font-bold px-2.5 py-1 rounded-full border flex-shrink-0 ${suitStyle}`}>
+            {suitIcon} {suitLabel}
+          </span>
+        </div>
+
+        {/* Suitability reason */}
+        <p className="text-[11px] text-gray-500 leading-snug mb-4">{card.suitability_reason}</p>
+
+        {/* Key stats grid */}
+        <div className="grid grid-cols-2 gap-2 mb-4">
+          <div className="bg-gray-50 rounded-xl px-3 py-2.5">
+            <div className="text-[10px] text-gray-400 font-medium mb-0.5">Buying Price</div>
+            <div className="text-sm font-bold text-green-700">₹{displayPrice}/kg</div>
+            {card.effective_price_per_kg !== null &&
+              card.effective_price_per_kg !== card.base_price_per_kg && (
+              <div className="text-[10px] text-gray-400">base ₹{card.base_price_per_kg}/kg</div>
+            )}
+          </div>
+          <div className="bg-gray-50 rounded-xl px-3 py-2.5">
+            <div className="text-[10px] text-gray-400 font-medium mb-0.5">Can Buy</div>
+            <div className="text-sm font-bold text-gray-800">
+              {card.capacity_kg.toLocaleString('en-IN')} kg
+            </div>
+          </div>
+          <div className="bg-gray-50 rounded-xl px-3 py-2.5">
+            <div className="text-[10px] text-gray-400 font-medium mb-0.5">Distance</div>
+            {card.maps_live && card.distance_km !== null ? (
+              <>
+                <div className="text-sm font-bold text-gray-800">{card.distance_km} km</div>
+                {card.travel_time_minutes !== null && (
+                  <div className="text-[10px] text-blue-500">🗺 {fmtTime(card.travel_time_minutes)}</div>
+                )}
+              </>
+            ) : (
+              <>
+                <div className="text-sm font-bold text-gray-400">Estimated</div>
+                <div className="text-[10px] text-gray-300">No live data</div>
+              </>
+            )}
+          </div>
+          <div className="bg-gray-50 rounded-xl px-3 py-2.5">
+            <div className="text-[10px] text-gray-400 font-medium mb-0.5">Transport</div>
+            <div className="text-sm font-bold text-gray-800">
+              ₹{card.transport_cost_per_kg.toFixed(2)}/kg
+            </div>
+          </div>
+        </div>
+
+        {/* Net value preview */}
+        {card.total_net_value !== null && (
+          <div className="bg-green-50 border border-green-100 rounded-xl px-3 py-2.5 mb-4">
+            <div className="text-[10px] text-gray-500 font-medium">Expected Net Value</div>
+            <div className="text-lg font-bold text-green-700">
+              {fmt(card.total_net_value)}
+            </div>
+            <div className="text-[10px] text-gray-400 mt-0.5">
+              ₹{card.net_value_per_kg}/kg after transport &amp; spoilage
+            </div>
+          </div>
+        )}
+
+        {/* Actions */}
+        <div className="flex gap-2">
+          <button
+            onClick={onUseInPlan}
+            className="flex-1 py-2 px-3 bg-green-600 hover:bg-green-700 text-white text-xs font-semibold rounded-xl transition active:scale-[0.98]"
+          >
+            {hasResults ? '→ View in My Plan' : '+ Use in My Plan'}
+          </button>
+          <button
+            onClick={onToggleExpand}
+            className="py-2 px-3 border border-gray-200 hover:bg-gray-50 text-gray-600 text-xs font-medium rounded-xl transition"
+          >
+            {expanded ? 'Less ▲' : 'Details ▼'}
+          </button>
+        </div>
+      </div>
+
+      {/* Expanded details panel */}
+      {expanded && (
+        <div className="border-t border-gray-100 bg-gray-50 px-5 py-4">
+          <div className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-3">
+            Full Details
+          </div>
+          <div className="space-y-2">
+            {([
+              ['Buying price', `₹${displayPrice}/kg`],
+              ['Quality required', card.min_quality === 'Low' ? 'Any grade accepted' : `${card.min_quality} or better`],
+              ['Accepted crops', card.accepted_crops.includes('all') ? 'All crops' : card.accepted_crops.join(', ')],
+              ['Available capacity', `${card.capacity_kg.toLocaleString('en-IN')} kg`],
+              ['Distance', card.maps_live && card.distance_km !== null
+                ? `${card.distance_km} km (Live route)`
+                : 'Estimated — live data unavailable'],
+              ['Travel time', card.travel_time_minutes !== null
+                ? fmtTime(card.travel_time_minutes)
+                : 'Unknown'],
+              ['Transport cost', `₹${card.transport_cost_per_kg.toFixed(2)}/kg`],
+              ['Spoilage risk', `${card.effective_spoilage_pct ?? card.base_spoilage_pct}% expected loss`],
+            ] as [string, string][]).map(([label, value]) => (
+              <div key={label} className="flex justify-between items-center text-xs">
+                <span className="text-gray-500">{label}</span>
+                <span className="text-gray-800 font-medium text-right max-w-[55%]">{value}</span>
+              </div>
+            ))}
+          </div>
+
+          {card.net_value_per_kg !== null && (
+            <div className="border-t border-gray-200 mt-3 pt-3">
+              <div className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">
+                Net Value Estimate
+              </div>
+              <div className="space-y-1 text-xs">
+                <div className="flex justify-between">
+                  <span className="text-gray-500">Price after quality</span>
+                  <span className="text-gray-700">₹{displayPrice}/kg</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-gray-500">− Transport</span>
+                  <span className="text-red-400">−₹{card.transport_cost_per_kg.toFixed(2)}/kg</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-gray-500">− Spoilage loss</span>
+                  <span className="text-red-400">
+                    −₹{((displayPrice * (card.effective_spoilage_pct ?? card.base_spoilage_pct)) / 100).toFixed(2)}/kg
+                  </span>
+                </div>
+                <div className="flex justify-between font-semibold pt-1 border-t border-gray-200">
+                  <span className="text-gray-700">= Net per kg</span>
+                  <span className="text-green-700">₹{card.net_value_per_kg}/kg</span>
+                </div>
+                {card.total_net_value !== null && (
+                  <div className="flex justify-between font-semibold">
+                    <span className="text-gray-700">= Total net value</span>
+                    <span className="text-green-700">{fmt(card.total_net_value)}</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Main App ──────────────────────────────────────────────────────────────────
 
 export default function App() {
@@ -475,6 +705,20 @@ export default function App() {
   const [distances, setDistances] = useState<Map<string, DistanceInfo>>(new Map());
   const [mapsLive, setMapsLive] = useState<boolean | null>(null);
 
+  // Marketplace state
+  const [mpData, setMpData] = useState<MarketCard[]>([]);
+  const [mpLoading, setMpLoading] = useState(false);
+  const [mpError, setMpError] = useState<string | null>(null);
+  const [mpFarmerLocation, setMpFarmerLocation] = useState('');
+  const [mpCrop, setMpCrop] = useState('');
+  const [mpQuality, setMpQuality] = useState('');
+  const [mpQuantity, setMpQuantity] = useState('');
+  const [mpShelfLife, setMpShelfLife] = useState('');
+  const [mpMinPrice, setMpMinPrice] = useState('');
+  const [mpMaxDistance, setMpMaxDistance] = useState('');
+  const [mpMinCapacity, setMpMinCapacity] = useState('');
+  const [mpExpandedCard, setMpExpandedCard] = useState<string | null>(null);
+
   // What-If state
   const [markets, setMarkets] = useState<Market[]>([]);
   const [wiTransport, setWiTransport] = useState(0);
@@ -497,6 +741,60 @@ export default function App() {
         .catch(() => {/* non-critical */});
     }
   }, [view]);
+
+  // Auto-populate marketplace filters from submission results
+  useEffect(() => {
+    if (view === 'marketplace') {
+      const loc = results?.farmer_location || farmerLocation;
+      if (loc) setMpFarmerLocation(loc);
+      if (results?.crop) setMpCrop(results.crop);
+      if (results?.quality) setMpQuality(results.quality);
+      if (results?.quantity_kg) setMpQuantity(String(results.quantity_kg));
+      if (shelfLife) setMpShelfLife(shelfLife);
+    }
+  }, [view]);
+
+  const fetchMarketplace = async () => {
+    const loc = mpFarmerLocation.trim();
+    if (!loc) {
+      setMpError('Please enter your location first.');
+      return;
+    }
+    setMpLoading(true);
+    setMpError(null);
+    try {
+      const params = new URLSearchParams({ farmer_location: loc });
+      if (mpCrop.trim()) params.set('crop', mpCrop.trim().toLowerCase());
+      if (mpQuality) params.set('quality', mpQuality);
+      if (mpQuantity) params.set('quantity_kg', mpQuantity);
+      if (mpShelfLife) params.set('shelf_life_days', mpShelfLife);
+      if (mpMinPrice) params.set('min_price_per_kg', mpMinPrice);
+      if (mpMaxDistance) params.set('max_distance_km', mpMaxDistance);
+      if (mpMinCapacity) params.set('min_capacity_kg', mpMinCapacity);
+      const resp = await fetch(`/api/marketplace?${params.toString()}`);
+      if (!resp.ok) throw new Error(`Server error: ${resp.status}`);
+      const data: MarketCard[] = await resp.json();
+      setMpData(data);
+      setMpExpandedCard(null);
+    } catch (err) {
+      setMpError(err instanceof Error ? err.message : 'Failed to load marketplace.');
+    } finally {
+      setMpLoading(false);
+    }
+  };
+
+  const handleUseInMyPlan = (card: MarketCard) => {
+    if (results) {
+      setView('results');
+    } else {
+      setCrop(card.accepted_crops.includes('all') ? crop || '' : card.accepted_crops[0] || '');
+      setFarmerLocation(mpFarmerLocation || farmerLocation);
+      setQuality(mpQuality || quality || 'Standard');
+      if (mpQuantity) setQuantity(mpQuantity);
+      if (mpShelfLife) setShelfLife(mpShelfLife);
+      setView('form');
+    }
+  };
 
   const resetAll = () => {
     setCrop('');
@@ -627,13 +925,44 @@ export default function App() {
       {/* Navigation Header */}
       <header className="border-b border-gray-100 bg-white/80 backdrop-blur sticky top-0 z-10">
         <div className="max-w-4xl mx-auto px-6 h-16 flex items-center justify-between">
-          <div className="flex items-center space-x-2">
+          <button
+            onClick={() => setView('home')}
+            className="flex items-center space-x-2 hover:opacity-80 transition"
+          >
             <span className="text-2xl">🌱</span>
             <span className="text-xl font-bold text-green-700 tracking-tight">Farm2Value</span>
+          </button>
+          <div className="flex items-center gap-1">
+            {(view === 'results' || view === 'form' || view === 'marketplace') && (
+              <>
+                <button
+                  onClick={() => results ? setView('results') : setView('form')}
+                  className={`text-xs px-3 py-1.5 rounded-lg font-medium transition ${
+                    (view === 'results' || view === 'form')
+                      ? 'bg-green-100 text-green-700'
+                      : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'
+                  }`}
+                >
+                  Decision Planner
+                </button>
+                <button
+                  onClick={() => setView('marketplace')}
+                  className={`text-xs px-3 py-1.5 rounded-lg font-medium transition ${
+                    view === 'marketplace'
+                      ? 'bg-green-100 text-green-700'
+                      : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'
+                  }`}
+                >
+                  Marketplace
+                </button>
+              </>
+            )}
+            {view === 'home' && (
+              <span className="text-xs font-medium text-gray-500 bg-green-50 text-green-700 px-3 py-1 rounded-full border border-green-100">
+                Hackathon Prototype
+              </span>
+            )}
           </div>
-          <span className="text-xs font-medium text-gray-500 bg-green-50 text-green-700 px-3 py-1 rounded-full border border-green-100">
-            Hackathon Prototype
-          </span>
         </div>
       </header>
 
@@ -652,12 +981,23 @@ export default function App() {
             <p className="text-xl text-gray-600 font-normal mb-8">
               Make smarter farm-to-market selling decisions.
             </p>
-            <button
-              onClick={handleStart}
-              className="inline-flex items-center justify-center px-8 py-4 text-base font-semibold text-white bg-green-600 hover:bg-green-700 rounded-xl shadow-md hover:shadow-lg transition-all transform active:scale-95"
-            >
-              Start Selling Decision
-            </button>
+            <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
+              <button
+                onClick={handleStart}
+                className="inline-flex items-center justify-center px-8 py-4 text-base font-semibold text-white bg-green-600 hover:bg-green-700 rounded-xl shadow-md hover:shadow-lg transition-all transform active:scale-95"
+              >
+                Start Selling Decision
+              </button>
+              <button
+                onClick={() => {
+                  setMpFarmerLocation('');
+                  setView('marketplace');
+                }}
+                className="inline-flex items-center justify-center px-6 py-4 text-base font-semibold text-green-700 bg-white border-2 border-green-200 hover:border-green-400 rounded-xl shadow-sm hover:shadow transition-all transform active:scale-95"
+              >
+                🏪 Browse Marketplace
+              </button>
+            </div>
           </div>
         )}
 
@@ -1132,12 +1472,227 @@ export default function App() {
                 Edit Details
               </button>
               <button
+                onClick={() => setView('marketplace')}
+                className="flex-1 py-2.5 px-4 rounded-lg border border-green-200 text-green-700 text-sm font-medium hover:bg-green-50 transition"
+              >
+                Find Buyers →
+              </button>
+              <button
                 onClick={handleBackToHome}
                 className="flex-1 py-2.5 px-4 rounded-lg bg-green-600 text-white text-sm font-medium hover:bg-green-700 transition"
               >
                 Start Again
               </button>
             </div>
+          </div>
+        )}
+
+        {/* ── MARKETPLACE VIEW ── */}
+        {view === 'marketplace' && (
+          <div className="w-full max-w-2xl space-y-6">
+            {/* Header */}
+            <div className="text-center">
+              <h2 className="text-2xl font-bold text-gray-900">Find Buyers &amp; Markets</h2>
+              <p className="text-sm text-gray-500 mt-1">
+                Discover buyers suited to your crop, quality and quantity
+              </p>
+            </div>
+
+            {/* Farmer context banner (if results exist) */}
+            {results && (
+              <div className="bg-green-50 border border-green-200 rounded-2xl px-5 py-3 flex flex-wrap items-center gap-2 text-xs">
+                <span className="text-gray-500 font-medium">Your context:</span>
+                <span className="bg-white border border-gray-200 rounded-full px-3 py-0.5 text-gray-600">
+                  🌾 {results.crop}
+                </span>
+                <span className="bg-white border border-gray-200 rounded-full px-3 py-0.5 text-gray-600">
+                  ⚖️ {results.quantity_kg} kg
+                </span>
+                <span className="bg-white border border-gray-200 rounded-full px-3 py-0.5 text-gray-600">
+                  ⭐ {results.quality}
+                </span>
+                <span className="bg-white border border-gray-200 rounded-full px-3 py-0.5 text-gray-600">
+                  📍 {results.farmer_location}
+                </span>
+              </div>
+            )}
+
+            {/* Filters */}
+            <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5 space-y-4">
+              <div className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-1">
+                Filter Options
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">Your Location *</label>
+                  <input
+                    type="text"
+                    placeholder="e.g. Vijayawada"
+                    value={mpFarmerLocation}
+                    onChange={(e) => setMpFarmerLocation(e.target.value)}
+                    className="w-full px-3 py-2 text-xs rounded-lg border border-gray-300 focus:ring-2 focus:ring-green-500 focus:border-green-500 outline-none transition"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">Crop</label>
+                  <input
+                    type="text"
+                    placeholder="e.g. onion"
+                    value={mpCrop}
+                    onChange={(e) => setMpCrop(e.target.value)}
+                    className="w-full px-3 py-2 text-xs rounded-lg border border-gray-300 focus:ring-2 focus:ring-green-500 focus:border-green-500 outline-none transition"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">Quality</label>
+                  <select
+                    value={mpQuality}
+                    onChange={(e) => setMpQuality(e.target.value)}
+                    className="w-full px-3 py-2 text-xs rounded-lg border border-gray-300 focus:ring-2 focus:ring-green-500 focus:border-green-500 outline-none bg-white transition"
+                  >
+                    <option value="">Any</option>
+                    <option value="Premium">Premium</option>
+                    <option value="Standard">Standard</option>
+                    <option value="Low">Low</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">Quantity (kg)</label>
+                  <input
+                    type="number"
+                    min="1"
+                    placeholder="e.g. 400"
+                    value={mpQuantity}
+                    onChange={(e) => setMpQuantity(e.target.value)}
+                    className="w-full px-3 py-2 text-xs rounded-lg border border-gray-300 focus:ring-2 focus:ring-green-500 focus:border-green-500 outline-none transition"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">Shelf life (days)</label>
+                  <input
+                    type="number"
+                    min="1"
+                    placeholder="e.g. 5"
+                    value={mpShelfLife}
+                    onChange={(e) => setMpShelfLife(e.target.value)}
+                    className="w-full px-3 py-2 text-xs rounded-lg border border-gray-300 focus:ring-2 focus:ring-green-500 focus:border-green-500 outline-none transition"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">Min price (₹/kg)</label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.5"
+                    placeholder="e.g. 15"
+                    value={mpMinPrice}
+                    onChange={(e) => setMpMinPrice(e.target.value)}
+                    className="w-full px-3 py-2 text-xs rounded-lg border border-gray-300 focus:ring-2 focus:ring-green-500 focus:border-green-500 outline-none transition"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">Max distance (km)</label>
+                  <input
+                    type="number"
+                    min="0"
+                    placeholder="e.g. 200"
+                    value={mpMaxDistance}
+                    onChange={(e) => setMpMaxDistance(e.target.value)}
+                    className="w-full px-3 py-2 text-xs rounded-lg border border-gray-300 focus:ring-2 focus:ring-green-500 focus:border-green-500 outline-none transition"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">Min capacity (kg)</label>
+                  <input
+                    type="number"
+                    min="0"
+                    placeholder="e.g. 500"
+                    value={mpMinCapacity}
+                    onChange={(e) => setMpMinCapacity(e.target.value)}
+                    className="w-full px-3 py-2 text-xs rounded-lg border border-gray-300 focus:ring-2 focus:ring-green-500 focus:border-green-500 outline-none transition"
+                  />
+                </div>
+              </div>
+
+              <button
+                onClick={fetchMarketplace}
+                disabled={mpLoading}
+                className="w-full py-2.5 bg-green-600 hover:bg-green-700 disabled:bg-green-400 text-white text-sm font-semibold rounded-xl shadow transition active:scale-[0.98] flex items-center justify-center gap-2"
+              >
+                {mpLoading ? (
+                  <>
+                    <span className="inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                    Finding Buyers…
+                  </>
+                ) : (
+                  '🔍 Find Matching Buyers'
+                )}
+              </button>
+
+              {mpError && (
+                <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-4 py-3 text-xs">
+                  ⚠️ {mpError}
+                </div>
+              )}
+            </div>
+
+            {/* Results count */}
+            {mpData.length > 0 && (
+              <div className="flex items-center justify-between px-1">
+                <span className="text-xs text-gray-500">
+                  {mpData.length} market{mpData.length !== 1 ? 's' : ''} found
+                </span>
+                <div className="flex items-center gap-2 text-[10px] text-gray-400">
+                  <span className="flex items-center gap-1">
+                    <span className="inline-block w-2 h-2 rounded-full bg-green-500" /> Suitable
+                  </span>
+                  <span className="flex items-center gap-1">
+                    <span className="inline-block w-2 h-2 rounded-full bg-amber-400" /> Limited
+                  </span>
+                  <span className="flex items-center gap-1">
+                    <span className="inline-block w-2 h-2 rounded-full bg-red-400" /> Not Suitable
+                  </span>
+                </div>
+              </div>
+            )}
+
+            {/* Buyer cards grid */}
+            {mpData.length > 0 && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                {mpData.map((card) => (
+                  <BuyerCard
+                    key={card.market_name}
+                    card={card}
+                    expanded={mpExpandedCard === card.market_name}
+                    onToggleExpand={() =>
+                      setMpExpandedCard(
+                        mpExpandedCard === card.market_name ? null : card.market_name
+                      )
+                    }
+                    onUseInPlan={() => handleUseInMyPlan(card)}
+                    hasResults={!!results}
+                  />
+                ))}
+              </div>
+            )}
+
+            {/* Empty state after search */}
+            {!mpLoading && mpData.length === 0 && !mpError && mpFarmerLocation && (
+              <div className="bg-white border border-gray-100 rounded-2xl p-10 text-center">
+                <div className="text-4xl mb-3">🏪</div>
+                <p className="text-gray-500 text-sm">No markets match your current filters.</p>
+                <p className="text-gray-400 text-xs mt-1">Try relaxing some filter criteria.</p>
+              </div>
+            )}
+
+            {/* Initial prompt before search */}
+            {!mpLoading && mpData.length === 0 && !mpError && !mpFarmerLocation && (
+              <div className="bg-white border border-gray-100 rounded-2xl p-10 text-center">
+                <div className="text-4xl mb-3">🗺</div>
+                <p className="text-gray-500 text-sm">Enter your location above and click Find Matching Buyers.</p>
+              </div>
+            )}
           </div>
         )}
       </main>

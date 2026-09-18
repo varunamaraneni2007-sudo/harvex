@@ -9,7 +9,7 @@ except ImportError:
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from maps_service import enrich_markets_with_distances
 from explanation_service import generate_explanation, generate_whatif_explanation
@@ -73,6 +73,9 @@ MARKETS = [
         "transport_cost_per_kg": 0.5,
         "capacity_kg": 500.0,
         "base_spoilage_pct": 3.0,
+        "buyer_type": "Local Mandi",
+        "accepted_crops": ["all"],
+        "min_quality": "Low",
     },
     {
         "market_name": "Guntur Wholesale Hub",
@@ -81,6 +84,9 @@ MARKETS = [
         "transport_cost_per_kg": 1.2,
         "capacity_kg": 2000.0,
         "base_spoilage_pct": 5.0,
+        "buyer_type": "Wholesale Buyer",
+        "accepted_crops": ["all"],
+        "min_quality": "Low",
     },
     {
         "market_name": "Hyderabad Metro Market",
@@ -89,6 +95,9 @@ MARKETS = [
         "transport_cost_per_kg": 3.5,
         "capacity_kg": 5000.0,
         "base_spoilage_pct": 8.0,
+        "buyer_type": "Retail Chain",
+        "accepted_crops": ["all"],
+        "min_quality": "Standard",
     },
     {
         "market_name": "FreshLink Retail Aggregator",
@@ -97,6 +106,9 @@ MARKETS = [
         "transport_cost_per_kg": 0.8,
         "capacity_kg": 300.0,
         "base_spoilage_pct": 2.0,
+        "buyer_type": "Retail Chain",
+        "accepted_crops": ["all"],
+        "min_quality": "Standard",
     },
     {
         "market_name": "FreezeMart Cold Storage",
@@ -105,6 +117,9 @@ MARKETS = [
         "transport_cost_per_kg": 1.5,
         "capacity_kg": 10000.0,
         "base_spoilage_pct": 1.0,
+        "buyer_type": "Cold Storage",
+        "accepted_crops": ["all"],
+        "min_quality": "Low",
     },
 ]
 
@@ -113,6 +128,9 @@ QUALITY_MULTIPLIER = {
     "Standard": 1.00,
     "Low": 0.80,
 }
+
+# Numeric rank for quality comparison (used by marketplace suitability check)
+QUALITY_ORDER = {"Low": 0, "Standard": 1, "Premium": 2}
 
 # Three strategy configurations for the LP objective.
 # transport_weight and spoilage_weight scale those cost terms in the
@@ -923,6 +941,190 @@ def distances(farmer_location: str = Query(..., description="Farmer's location")
         }
         for m in enriched
     ]
+
+
+# ── /api/marketplace ──────────────────────────────────────────────────────────
+
+class MarketCard(BaseModel):
+    market_name: str
+    buyer_type: str
+    location: str
+    base_price_per_kg: float
+    effective_price_per_kg: Optional[float] = None
+    transport_cost_per_kg: float
+    capacity_kg: float
+    base_spoilage_pct: float
+    effective_spoilage_pct: Optional[float] = None
+    distance_km: Optional[float] = None
+    travel_time_minutes: Optional[float] = None
+    maps_live: bool = False
+    accepted_crops: List[str]
+    min_quality: str
+    suitability: str = "Unknown"
+    suitability_reason: str = ""
+    net_value_per_kg: Optional[float] = None
+    total_net_value: Optional[float] = None
+
+
+def _compute_suitability(
+    market: dict,
+    crop: Optional[str] = None,
+    quality: Optional[str] = None,
+    quantity_kg: Optional[float] = None,
+    shelf_life_days: Optional[int] = None,
+) -> Tuple[str, str]:
+    """
+    Return (suitability_label, reason_string) for a market given farmer context.
+    Labels: "Suitable" | "Partial" | "Not Suitable"
+    """
+    accepted = market.get("accepted_crops", ["all"])
+    min_q = market.get("min_quality", "Low")
+    cap = market["capacity_kg"]
+
+    # 1. Crop compatibility
+    if crop and "all" not in [a.lower() for a in accepted]:
+        if crop.lower() not in [a.lower() for a in accepted]:
+            return "Not Suitable", f"Does not purchase {crop}."
+
+    # 2. Quality compatibility
+    if quality:
+        farmer_rank = QUALITY_ORDER.get(quality, 1)
+        req_rank = QUALITY_ORDER.get(min_q, 0)
+        if farmer_rank < req_rank:
+            return (
+                "Not Suitable",
+                f"Requires {min_q} quality or better; your produce is {quality} grade.",
+            )
+
+    level = "Suitable"
+    notes: List[str] = []
+
+    # 3. Capacity vs quantity
+    if quantity_kg and quantity_kg > 0 and cap < quantity_kg:
+        pct = round(cap / quantity_kg * 100)
+        level = "Partial"
+        notes.append(
+            f"capacity {cap:.0f} kg — can take {pct}% of your {quantity_kg:.0f} kg harvest"
+        )
+
+    # 4. Travel time risk vs shelf life
+    travel_min = market.get("travel_time_minutes")
+    if shelf_life_days and travel_min:
+        travel_days = travel_min / 60.0 / 24.0
+        if travel_days > shelf_life_days * 0.5:
+            if level == "Suitable":
+                level = "Partial"
+            travel_h = round(travel_min / 60, 1)
+            notes.append(
+                f"travel time (~{travel_h}h) may strain {shelf_life_days}d shelf life"
+            )
+
+    # Build human-readable reason
+    if level == "Suitable":
+        parts: List[str] = []
+        if crop:
+            parts.append(f"accepts {crop}")
+        if quality:
+            parts.append(f"{quality} quality meets requirement")
+        if quantity_kg:
+            parts.append(f"has capacity for your full {quantity_kg:.0f} kg harvest")
+        reason = "Suitable" + (f" — {', '.join(parts)}." if parts else ".")
+    else:
+        reason = "Limited — " + "; ".join(notes) + "." if notes else "Partially suitable."
+
+    return level, reason
+
+
+@app.get("/api/marketplace")
+def marketplace(
+    farmer_location: str = Query(..., description="Farmer's location"),
+    crop: Optional[str] = Query(None),
+    quality: Optional[str] = Query(None),
+    quantity_kg: Optional[float] = Query(None, gt=0),
+    shelf_life_days: Optional[int] = Query(None, gt=0),
+    min_price_per_kg: float = Query(0.0, ge=0),
+    max_distance_km: Optional[float] = Query(None, gt=0),
+    min_capacity_kg: float = Query(0.0, ge=0),
+) -> List[MarketCard]:
+    """
+    Return enriched market/buyer cards for the marketplace view.
+    Filters, suitability, and net-value previews are all computed server-side
+    using the same decision-engine calculations as the rest of the API.
+    """
+    enriched = enrich_markets_with_distances(farmer_location, MARKETS)
+
+    cards: List[MarketCard] = []
+    for m in enriched:
+        distance_km: Optional[float] = m.get("distance_km")
+        travel_time_minutes: Optional[float] = m.get("travel_time_minutes")
+        maps_live = distance_km is not None
+
+        # ── Filters ──────────────────────────────────────────────────────────
+        if m["base_price_per_kg"] < min_price_per_kg:
+            continue
+        if m["capacity_kg"] < min_capacity_kg:
+            continue
+        # Only apply distance filter when the distance is actually known
+        if max_distance_km is not None and distance_km is not None:
+            if distance_km > max_distance_km:
+                continue
+
+        # ── Suitability ───────────────────────────────────────────────────────
+        # Attach live travel_time_minutes so _compute_suitability can check shelf risk
+        m_with_travel = {**m, "travel_time_minutes": travel_time_minutes}
+        suitability, reason = _compute_suitability(
+            m_with_travel, crop, quality, quantity_kg, shelf_life_days
+        )
+
+        # ── Per-quality effective values ──────────────────────────────────────
+        effective_price: Optional[float] = None
+        effective_spoilage: Optional[float] = None
+        net_value_per_kg: Optional[float] = None
+        total_net_value: Optional[float] = None
+
+        if quality:
+            qm = QUALITY_MULTIPLIER.get(quality, 1.0)
+            effective_price = round(m["base_price_per_kg"] * qm, 2)
+
+        if shelf_life_days is not None:
+            effective_spoilage = round(
+                _effective_spoilage_pct(m["base_spoilage_pct"], shelf_life_days), 2
+            )
+
+        if quality and shelf_life_days is not None:
+            qm = QUALITY_MULTIPLIER.get(quality, 1.0)
+            nv = _true_net_per_kg(m, qm, shelf_life_days)
+            if nv > 0:
+                net_value_per_kg = round(nv, 2)
+                if quantity_kg:
+                    eff_qty = min(quantity_kg, m["capacity_kg"])
+                    total_net_value = round(nv * eff_qty, 2)
+
+        cards.append(MarketCard(
+            market_name=m["market_name"],
+            buyer_type=m["buyer_type"],
+            location=m["location"],
+            base_price_per_kg=m["base_price_per_kg"],
+            effective_price_per_kg=effective_price,
+            transport_cost_per_kg=round(m["transport_cost_per_kg"], 4),
+            capacity_kg=m["capacity_kg"],
+            base_spoilage_pct=m["base_spoilage_pct"],
+            effective_spoilage_pct=effective_spoilage,
+            distance_km=distance_km,
+            travel_time_minutes=travel_time_minutes,
+            maps_live=maps_live,
+            accepted_crops=m["accepted_crops"],
+            min_quality=m["min_quality"],
+            suitability=suitability,
+            suitability_reason=reason,
+            net_value_per_kg=net_value_per_kg,
+            total_net_value=total_net_value,
+        ))
+
+    # Sort: Suitable first, then Partial, then Not Suitable; within group by base price desc
+    order = {"Suitable": 0, "Partial": 1, "Not Suitable": 2, "Unknown": 3}
+    cards.sort(key=lambda c: (order.get(c.suitability, 3), -c.base_price_per_kg))
+    return cards
 
 
 if __name__ == "__main__":
