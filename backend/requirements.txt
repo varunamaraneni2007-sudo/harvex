@@ -3,3 +3,5 @@ uvicorn
 ortools
 pytest
 httpx
+supabase
+python-dotenv

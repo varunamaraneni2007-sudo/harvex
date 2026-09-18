@@ -82,6 +82,13 @@ interface PlansResponse {
   plan_c: PlanResult;
 }
 
+interface SubmissionResponse {
+  optimize: OptimizeResponse;
+  plans: PlansResponse;
+  saved: boolean;
+  farmer_input_id: string | null;
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function fmt(n: number): string {
@@ -418,6 +425,7 @@ export default function App() {
 
   // Plans A/B/C state
   const [plansResult, setPlansResult] = useState<PlansResponse | null>(null);
+  const [decisionSaved, setDecisionSaved] = useState(false);
 
   // What-If state
   const [markets, setMarkets] = useState<Market[]>([]);
@@ -450,6 +458,7 @@ export default function App() {
     setApiError(null);
     setResults(null);
     setPlansResult(null);
+    setDecisionSaved(false);
     setWiResult(null);
     setWiTransport(0);
     setWiPrice(0);
@@ -483,29 +492,18 @@ export default function App() {
     };
 
     try {
-      const [optimizeRes, plansRes] = await Promise.all([
-        fetch('/api/decision/optimize', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-        }),
-        fetch('/api/decision/plans', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-        }),
-      ]);
+      const response = await fetch('/api/submission', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
 
-      if (!optimizeRes.ok) throw new Error(`Server error: ${optimizeRes.status}`);
-      if (!plansRes.ok) throw new Error(`Plans error: ${plansRes.status}`);
+      if (!response.ok) throw new Error(`Server error: ${response.status}`);
 
-      const [optData, plansData]: [OptimizeResponse, PlansResponse] = await Promise.all([
-        optimizeRes.json(),
-        plansRes.json(),
-      ]);
-
-      setResults(optData);
-      setPlansResult(plansData);
+      const data: SubmissionResponse = await response.json();
+      setResults(data.optimize);
+      setPlansResult(data.plans);
+      setDecisionSaved(data.saved);
       setWiResult(null);
       setView('results');
     } catch (err) {
@@ -760,6 +758,11 @@ export default function App() {
                 <span className="bg-white border border-gray-200 rounded-full px-3 py-1 text-gray-600">
                   📍 {results.farmer_location}
                 </span>
+                {decisionSaved && (
+                  <span className="bg-green-100 border border-green-300 text-green-700 rounded-full px-3 py-1 font-medium">
+                    ✓ Decision saved
+                  </span>
+                )}
               </div>
             </div>
 

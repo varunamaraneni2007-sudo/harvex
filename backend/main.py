@@ -1,9 +1,38 @@
+import os
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
 
 from ortools.linear_solver import pywraplp
+
+# ── Supabase client (lazy, optional) ─────────────────────────────────────────
+
+_supabase_client = None  # module-level singleton; replaced in tests
+
+
+def _get_supabase():
+    """Return a live Supabase client or None if credentials are not configured."""
+    global _supabase_client
+    if _supabase_client is not None:
+        return _supabase_client
+    url = os.getenv("SUPABASE_URL", "")
+    key = os.getenv("SUPABASE_SERVICE_KEY", "")
+    if not url or not key:
+        return None
+    try:
+        from supabase import create_client
+        _supabase_client = create_client(url, key)
+        return _supabase_client
+    except Exception:
+        return None
 
 app = FastAPI(title="Farm2Value API")
 
@@ -762,6 +791,97 @@ def plans(data: ProduceInput) -> PlansResponse:
         plan_a=plan_a,
         plan_b=plan_b,
         plan_c=plan_c,
+    )
+
+
+# ── /api/submission (persist + return all results) ────────────────────────────
+
+class SubmissionResponse(BaseModel):
+    optimize: OptimizeResponse
+    plans: PlansResponse
+    saved: bool
+    farmer_input_id: Optional[str] = None
+
+
+def _save_plan_rows(sb, farmer_input_id: str, plan_name: str, plan) -> None:
+    """Insert one decision_result row plus its allocation rows."""
+    result_row = (
+        sb.table("decision_results")
+        .insert({
+            "farmer_input_id": farmer_input_id,
+            "plan_name": plan_name,
+            "total_allocated_kg": float(plan.total_quantity_allocated),
+            "gross_revenue": float(plan.total_gross_revenue),
+            "transport_cost": float(plan.total_transport_cost),
+            "spoilage_loss": float(plan.total_spoilage_loss_value),
+            "expected_net_value": float(plan.total_net_value),
+        })
+        .execute()
+    )
+    decision_result_id = result_row.data[0]["id"]
+
+    for ch in plan.allocations:
+        sb.table("allocations").insert({
+            "decision_result_id": decision_result_id,
+            "buyer_name": ch.market_name,
+            "allocated_quantity_kg": float(ch.quantity_kg),
+            "selling_price_per_kg": float(ch.price_per_kg),
+            "gross_revenue": float(ch.gross_revenue),
+            "transport_cost": float(ch.transport_cost),
+            "spoilage_loss": float(ch.spoilage_loss_value),
+            "expected_net_value": float(ch.net_value),
+        }).execute()
+
+
+def _save_to_supabase(
+    data,
+    optimize_resp: OptimizeResponse,
+    plans_resp: PlansResponse,
+) -> Optional[str]:
+    """
+    Persist farmer input + recommended plan + Plan A/B/C to Supabase.
+    Returns the farmer_input_id UUID on success, or None on any failure.
+    Never raises — Supabase unavailability must not break the response.
+    """
+    sb = _get_supabase()
+    if sb is None:
+        return None
+    try:
+        input_row = (
+            sb.table("farmer_inputs")
+            .insert({
+                "crop": data.crop,
+                "quantity_kg": float(data.quantity_kg),
+                "quality": data.quality,
+                "farmer_location": data.farmer_location,
+                "harvest_date": data.harvest_date,
+                "shelf_life_days": data.shelf_life_days,
+            })
+            .execute()
+        )
+        farmer_input_id: str = input_row.data[0]["id"]
+
+        _save_plan_rows(sb, farmer_input_id, "optimize_recommended", optimize_resp.recommended)
+        _save_plan_rows(sb, farmer_input_id, "plan_a", plans_resp.plan_a)
+        _save_plan_rows(sb, farmer_input_id, "plan_b", plans_resp.plan_b)
+        _save_plan_rows(sb, farmer_input_id, "plan_c", plans_resp.plan_c)
+
+        return farmer_input_id
+    except Exception:
+        return None
+
+
+@app.post("/api/submission")
+def submission(data: ProduceInput) -> SubmissionResponse:
+    # Re-use existing endpoint functions; they are pure and deterministic.
+    optimize_resp = optimize(data)
+    plans_resp = plans(data)
+    farmer_input_id = _save_to_supabase(data, optimize_resp, plans_resp)
+    return SubmissionResponse(
+        optimize=optimize_resp,
+        plans=plans_resp,
+        saved=farmer_input_id is not None,
+        farmer_input_id=farmer_input_id,
     )
 
 
