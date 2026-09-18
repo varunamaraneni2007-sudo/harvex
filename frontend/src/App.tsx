@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 
 // ── API Types ─────────────────────────────────────────────────────────────────
 
@@ -34,10 +34,46 @@ interface OptimizeResponse {
   alternatives: AllocationStrategy[];
 }
 
+interface WhatIfPlan {
+  allocations: ChannelAllocation[];
+  total_quantity_allocated: number;
+  total_gross_revenue: number;
+  total_transport_cost: number;
+  total_spoilage_loss_value: number;
+  total_net_value: number;
+}
+
+interface WhatIfResponse {
+  crop: string;
+  quantity_kg: number;
+  quality: string;
+  farmer_location: string;
+  scenario_description: string;
+  current_plan: WhatIfPlan;
+  whatif_plan: WhatIfPlan;
+  delta_net_value: number;
+}
+
+interface Market {
+  market_name: string;
+  location: string;
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function fmt(n: number): string {
   return '₹' + n.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function deltaClass(d: number): string {
+  if (d > 0) return 'text-green-600';
+  if (d < 0) return 'text-red-500';
+  return 'text-gray-500';
+}
+
+function deltaSign(d: number): string {
+  if (d > 0) return '+';
+  return '';
 }
 
 type View = 'home' | 'form' | 'results';
@@ -191,6 +227,50 @@ function StrategyCard({
   );
 }
 
+// ── What-If Plan column ───────────────────────────────────────────────────────
+
+function PlanColumn({ plan, label, accent }: { plan: WhatIfPlan; label: string; accent: string }) {
+  return (
+    <div className="flex-1 min-w-0">
+      <div className={`text-xs font-bold uppercase tracking-widest mb-3 ${accent}`}>{label}</div>
+      {plan.allocations.length === 0 ? (
+        <p className="text-xs text-gray-400 italic">No viable allocation</p>
+      ) : (
+        <div className="space-y-1.5 mb-3">
+          {plan.allocations.map((ch) => (
+            <div key={ch.market_name} className="flex items-center justify-between gap-2 text-xs">
+              <span className="text-gray-600 truncate">{ch.market_name}</span>
+              <span className="tabular-nums text-gray-700 flex-shrink-0">{ch.quantity_kg} kg</span>
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="border-t border-gray-100 pt-2 space-y-1 text-xs">
+        <div className="flex justify-between">
+          <span className="text-gray-400">Qty allocated</span>
+          <span className="tabular-nums text-gray-700">{plan.total_quantity_allocated} kg</span>
+        </div>
+        <div className="flex justify-between">
+          <span className="text-gray-400">Gross revenue</span>
+          <span className="tabular-nums text-gray-700">{fmt(plan.total_gross_revenue)}</span>
+        </div>
+        <div className="flex justify-between">
+          <span className="text-gray-400">Transport cost</span>
+          <span className="tabular-nums text-red-400">−{fmt(plan.total_transport_cost)}</span>
+        </div>
+        <div className="flex justify-between">
+          <span className="text-gray-400">Spoilage loss</span>
+          <span className="tabular-nums text-red-400">−{fmt(plan.total_spoilage_loss_value)}</span>
+        </div>
+        <div className="flex justify-between font-semibold mt-1 pt-1 border-t border-gray-100">
+          <span className="text-gray-700">Net value</span>
+          <span className={`tabular-nums ${accent}`}>{fmt(plan.total_net_value)}</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Main App ──────────────────────────────────────────────────────────────────
 
 export default function App() {
@@ -209,6 +289,27 @@ export default function App() {
   const [apiError, setApiError] = useState<string | null>(null);
   const [results, setResults] = useState<OptimizeResponse | null>(null);
 
+  // What-If state
+  const [markets, setMarkets] = useState<Market[]>([]);
+  const [wiTransport, setWiTransport] = useState(0);
+  const [wiPrice, setWiPrice] = useState(0);
+  const [wiShelf, setWiShelf] = useState(0);
+  const [wiCancelled, setWiCancelled] = useState('');
+  const [wiCapacity, setWiCapacity] = useState(0);
+  const [wiResult, setWiResult] = useState<WhatIfResponse | null>(null);
+  const [wiLoading, setWiLoading] = useState(false);
+  const [wiError, setWiError] = useState<string | null>(null);
+
+  // Fetch markets list when entering results
+  useEffect(() => {
+    if (view === 'results' && markets.length === 0) {
+      fetch('/api/markets')
+        .then((r) => r.json())
+        .then((data: Market[]) => setMarkets(data))
+        .catch(() => {/* non-critical */});
+    }
+  }, [view]);
+
   const resetAll = () => {
     setCrop('');
     setQuantity('');
@@ -218,6 +319,12 @@ export default function App() {
     setHarvestDate('');
     setApiError(null);
     setResults(null);
+    setWiResult(null);
+    setWiTransport(0);
+    setWiPrice(0);
+    setWiShelf(0);
+    setWiCancelled('');
+    setWiCapacity(0);
   };
 
   const handleStart = () => {
@@ -255,6 +362,7 @@ export default function App() {
 
       const data: OptimizeResponse = await response.json();
       setResults(data);
+      setWiResult(null);
       setView('results');
     } catch (err) {
       setApiError(
@@ -264,6 +372,42 @@ export default function App() {
       );
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const handleRunWhatIf = async () => {
+    if (!results) return;
+    setWiLoading(true);
+    setWiError(null);
+    try {
+      const response = await fetch('/api/decision/whatif', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          produce: {
+            crop,
+            quantity_kg: results.quantity_kg,
+            quality: results.quality,
+            farmer_location: results.farmer_location,
+            harvest_date: harvestDate,
+            shelf_life_days: parseInt(shelfLife, 10),
+          },
+          scenario: {
+            transport_cost_increase_pct: wiTransport,
+            price_decrease_pct: wiPrice,
+            shelf_life_reduction_days: wiShelf,
+            cancelled_market: wiCancelled || null,
+            capacity_reduction_pct: wiCapacity,
+          },
+        }),
+      });
+      if (!response.ok) throw new Error(`Server error: ${response.status}`);
+      const data: WhatIfResponse = await response.json();
+      setWiResult(data);
+    } catch (err) {
+      setWiError(err instanceof Error ? err.message : 'What-If request failed.');
+    } finally {
+      setWiLoading(false);
     }
   };
 
@@ -453,11 +597,7 @@ export default function App() {
                     Harvest Allocation Plan
                   </h2>
                   <p className="text-sm text-gray-500">
-                    Optimised across {(results.recommended.allocations.length +
-                      results.alternatives.reduce((s, a) => s + a.allocations.length, 0) > 0)
-                      ? results.recommended.allocations.length
-                      : 0}{' '}
-                    market channel
+                    Optimised across {results.recommended.allocations.length} market channel
                     {results.recommended.allocations.length !== 1 ? 's' : ''} for maximum value
                   </p>
                 </div>
@@ -501,6 +641,181 @@ export default function App() {
                 </div>
               </div>
             )}
+
+            {/* ── WHAT-IF SIMULATOR ── */}
+            <div className="bg-white rounded-2xl border border-amber-200 shadow-sm overflow-hidden">
+              <div className="px-6 pt-5 pb-4 border-b border-amber-100 bg-amber-50">
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="text-lg">🔮</span>
+                  <h3 className="text-base font-bold text-gray-900">What-If Simulator</h3>
+                </div>
+                <p className="text-xs text-gray-500">
+                  Adjust market conditions to see how your net value changes.
+                </p>
+              </div>
+
+              <div className="px-6 py-5 space-y-4">
+                {/* Transport cost increase */}
+                <div>
+                  <div className="flex justify-between text-xs text-gray-600 mb-1">
+                    <label className="font-medium">Transport cost increase</label>
+                    <span className="tabular-nums font-semibold text-amber-700">+{wiTransport}%</span>
+                  </div>
+                  <input
+                    type="range" min={0} max={100} step={5}
+                    value={wiTransport}
+                    onChange={(e) => setWiTransport(Number(e.target.value))}
+                    className="w-full accent-amber-500"
+                  />
+                  <div className="flex justify-between text-[10px] text-gray-300 mt-0.5">
+                    <span>0%</span><span>100%</span>
+                  </div>
+                </div>
+
+                {/* Price decrease */}
+                <div>
+                  <div className="flex justify-between text-xs text-gray-600 mb-1">
+                    <label className="font-medium">Market price decrease</label>
+                    <span className="tabular-nums font-semibold text-amber-700">−{wiPrice}%</span>
+                  </div>
+                  <input
+                    type="range" min={0} max={50} step={5}
+                    value={wiPrice}
+                    onChange={(e) => setWiPrice(Number(e.target.value))}
+                    className="w-full accent-amber-500"
+                  />
+                  <div className="flex justify-between text-[10px] text-gray-300 mt-0.5">
+                    <span>0%</span><span>50%</span>
+                  </div>
+                </div>
+
+                {/* Shelf life reduction */}
+                <div>
+                  <div className="flex justify-between text-xs text-gray-600 mb-1">
+                    <label className="font-medium">Shelf life reduction</label>
+                    <span className="tabular-nums font-semibold text-amber-700">−{wiShelf} day{wiShelf !== 1 ? 's' : ''}</span>
+                  </div>
+                  <input
+                    type="range" min={0} max={3} step={1}
+                    value={wiShelf}
+                    onChange={(e) => setWiShelf(Number(e.target.value))}
+                    className="w-full accent-amber-500"
+                  />
+                  <div className="flex justify-between text-[10px] text-gray-300 mt-0.5">
+                    <span>0 days</span><span>−3 days</span>
+                  </div>
+                </div>
+
+                {/* Capacity reduction */}
+                <div>
+                  <div className="flex justify-between text-xs text-gray-600 mb-1">
+                    <label className="font-medium">Market capacity reduction</label>
+                    <span className="tabular-nums font-semibold text-amber-700">−{wiCapacity}%</span>
+                  </div>
+                  <input
+                    type="range" min={0} max={100} step={10}
+                    value={wiCapacity}
+                    onChange={(e) => setWiCapacity(Number(e.target.value))}
+                    className="w-full accent-amber-500"
+                  />
+                  <div className="flex justify-between text-[10px] text-gray-300 mt-0.5">
+                    <span>0%</span><span>100%</span>
+                  </div>
+                </div>
+
+                {/* Cancelled buyer */}
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1.5">
+                    Cancelled buyer
+                  </label>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setWiCancelled('')}
+                      className={`text-xs px-3 py-1.5 rounded-full border transition ${
+                        wiCancelled === ''
+                          ? 'bg-amber-500 text-white border-amber-500'
+                          : 'bg-white text-gray-600 border-gray-200 hover:border-amber-300'
+                      }`}
+                    >
+                      None
+                    </button>
+                    {markets.map((m) => (
+                      <button
+                        key={m.market_name}
+                        type="button"
+                        onClick={() => setWiCancelled(wiCancelled === m.market_name ? '' : m.market_name)}
+                        className={`text-xs px-3 py-1.5 rounded-full border transition ${
+                          wiCancelled === m.market_name
+                            ? 'bg-amber-500 text-white border-amber-500'
+                            : 'bg-white text-gray-600 border-gray-200 hover:border-amber-300'
+                        }`}
+                      >
+                        {m.market_name}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={handleRunWhatIf}
+                  disabled={wiLoading}
+                  className="w-full py-2.5 px-4 bg-amber-500 hover:bg-amber-600 disabled:bg-amber-300 text-white font-semibold rounded-xl shadow transition active:scale-[0.98] flex items-center justify-center gap-2 text-sm"
+                >
+                  {wiLoading ? (
+                    <>
+                      <span className="inline-block w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                      Running simulation…
+                    </>
+                  ) : (
+                    '▶ Run What-If Simulation'
+                  )}
+                </button>
+
+                {wiError && (
+                  <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-4 py-3 text-xs">
+                    ⚠️ {wiError}
+                  </div>
+                )}
+              </div>
+
+              {/* Comparison panel */}
+              {wiResult && (
+                <div className="border-t border-amber-100 bg-amber-50/40 px-6 py-5">
+                  <div className="flex items-center justify-between mb-4">
+                    <h4 className="text-xs font-bold text-gray-700 uppercase tracking-widest">Comparison</h4>
+                    <span className="text-xs bg-amber-100 text-amber-800 rounded-full px-2.5 py-0.5 font-medium">
+                      {wiResult.scenario_description}
+                    </span>
+                  </div>
+
+                  {/* Side-by-side columns */}
+                  <div className="flex gap-6">
+                    <PlanColumn plan={wiResult.current_plan} label="Current Plan" accent="text-green-700" />
+                    <div className="w-px bg-gray-200 flex-shrink-0" />
+                    <PlanColumn plan={wiResult.whatif_plan} label="What-If Plan" accent="text-amber-700" />
+                  </div>
+
+                  {/* Delta banner */}
+                  <div className={`mt-4 rounded-xl px-4 py-3 text-center ${
+                    wiResult.delta_net_value < 0 ? 'bg-red-50 border border-red-100' : 'bg-green-50 border border-green-100'
+                  }`}>
+                    <div className="text-xs text-gray-500 mb-0.5">Net value impact</div>
+                    <div className={`text-xl font-bold tabular-nums ${deltaClass(wiResult.delta_net_value)}`}>
+                      {deltaSign(wiResult.delta_net_value)}{fmt(wiResult.delta_net_value)}
+                    </div>
+                    <div className="text-xs text-gray-400 mt-0.5">
+                      {wiResult.delta_net_value < 0
+                        ? 'You stand to lose this much under this scenario.'
+                        : wiResult.delta_net_value > 0
+                        ? 'Your net value improves under this scenario.'
+                        : 'No change in net value.'}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
 
             {/* Action buttons */}
             <div className="flex gap-3 pt-2">

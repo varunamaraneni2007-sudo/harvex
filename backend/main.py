@@ -326,11 +326,14 @@ def _build_strategy(
     strategy_cfg: dict,
     quality_mult: float,
     raw_allocations: List[float],
+    markets: Optional[List[dict]] = None,
 ) -> AllocationStrategy:
     """Compute true (unweighted) channel metrics from raw LP allocations."""
+    if markets is None:
+        markets = MARKETS
     channels: List[ChannelAllocation] = []
 
-    for m, qty in zip(MARKETS, raw_allocations):
+    for m, qty in zip(markets, raw_allocations):
         if qty < 0.01:
             continue
 
@@ -435,6 +438,178 @@ def optimize(data: ProduceInput) -> OptimizeResponse:
         farmer_location=data.farmer_location,
         recommended=strategies[0],
         alternatives=strategies[1:],
+    )
+
+
+# ── /api/markets ─────────────────────────────────────────────────────────────
+
+@app.get("/api/markets")
+def list_markets():
+    return [
+        {"market_name": m["market_name"], "location": m["location"]}
+        for m in MARKETS
+    ]
+
+
+# ── /api/decision/whatif ──────────────────────────────────────────────────────
+
+class WhatIfScenario(BaseModel):
+    transport_cost_increase_pct: float = 0.0   # 0–100
+    price_decrease_pct: float = 0.0            # 0–50
+    shelf_life_reduction_days: int = 0          # 0–3
+    cancelled_market: Optional[str] = None      # market_name to exclude
+    capacity_reduction_pct: float = 0.0        # 0–100
+
+
+class WhatIfRequest(BaseModel):
+    produce: ProduceInput
+    scenario: WhatIfScenario
+
+
+class WhatIfPlan(BaseModel):
+    allocations: List[ChannelAllocation]
+    total_quantity_allocated: float
+    total_gross_revenue: float
+    total_transport_cost: float
+    total_spoilage_loss_value: float
+    total_net_value: float
+
+
+class WhatIfResponse(BaseModel):
+    crop: str
+    quantity_kg: float
+    quality: str
+    farmer_location: str
+    scenario_description: str
+    current_plan: WhatIfPlan
+    whatif_plan: WhatIfPlan
+    delta_net_value: float
+
+
+def _greedy_allocate(quantity_kg: float, markets: List[dict], quality_mult: float, shelf_life_days: int) -> List[float]:
+    """
+    Greedy allocation: sort markets by true net per kg (descending), fill to
+    capacity. Equivalent to GLOP for this linear objective.
+    """
+    indexed = [
+        (i, _true_net_per_kg(m, quality_mult, shelf_life_days), m["capacity_kg"])
+        for i, m in enumerate(markets)
+    ]
+    indexed.sort(key=lambda t: t[1], reverse=True)
+
+    allocations = [0.0] * len(markets)
+    remaining = quantity_kg
+    for idx, net_per_kg, cap in indexed:
+        if net_per_kg <= 0 or remaining <= 0:
+            break
+        alloc = min(remaining, cap)
+        allocations[idx] = round(alloc, 2)
+        remaining -= alloc
+
+    return allocations
+
+
+def _apply_scenario(markets: List[dict], data: ProduceInput, scenario: WhatIfScenario):
+    """Return (modified_markets, effective_shelf_life_days)."""
+    effective_shelf = max(1, data.shelf_life_days - scenario.shelf_life_reduction_days)
+
+    modified = []
+    for m in markets:
+        if m["market_name"] == scenario.cancelled_market:
+            continue
+        cap_factor = 1.0 - scenario.capacity_reduction_pct / 100.0
+        modified.append({
+            **m,
+            "base_price_per_kg": m["base_price_per_kg"] * (1.0 - scenario.price_decrease_pct / 100.0),
+            "transport_cost_per_kg": m["transport_cost_per_kg"] * (1.0 + scenario.transport_cost_increase_pct / 100.0),
+            "capacity_kg": m["capacity_kg"] * cap_factor,
+        })
+    return modified, effective_shelf
+
+
+def _scenario_description(scenario: WhatIfScenario) -> str:
+    parts = []
+    if scenario.transport_cost_increase_pct:
+        parts.append(f"transport costs +{scenario.transport_cost_increase_pct:.0f}%")
+    if scenario.price_decrease_pct:
+        parts.append(f"prices -{scenario.price_decrease_pct:.0f}%")
+    if scenario.shelf_life_reduction_days:
+        parts.append(f"shelf life -{scenario.shelf_life_reduction_days}d")
+    if scenario.cancelled_market:
+        parts.append(f"{scenario.cancelled_market} cancelled")
+    if scenario.capacity_reduction_pct:
+        parts.append(f"capacity -{scenario.capacity_reduction_pct:.0f}%")
+    return ", ".join(parts) if parts else "No changes (baseline)"
+
+
+def _plan_from_allocations(markets: List[dict], raw: List[float], quality_mult: float, shelf_life_days: int) -> WhatIfPlan:
+    channels: List[ChannelAllocation] = []
+    for m, qty in zip(markets, raw):
+        if qty < 0.01:
+            continue
+        price = round(m["base_price_per_kg"] * quality_mult, 2)
+        sp = _effective_spoilage_pct(m["base_spoilage_pct"], shelf_life_days)
+        gross = round(qty * price, 2)
+        transport = round(qty * m["transport_cost_per_kg"], 2)
+        spoilage_qty = round(qty * sp / 100, 2)
+        spoilage_val = round(spoilage_qty * price, 2)
+        net = round(gross - transport - spoilage_val, 2)
+        channels.append(ChannelAllocation(
+            market_name=m["market_name"],
+            location=m["location"],
+            quantity_kg=qty,
+            price_per_kg=price,
+            gross_revenue=gross,
+            transport_cost=transport,
+            spoilage_loss_kg=spoilage_qty,
+            spoilage_loss_value=spoilage_val,
+            net_value=net,
+        ))
+    channels.sort(key=lambda c: c.net_value, reverse=True)
+    return WhatIfPlan(
+        allocations=channels,
+        total_quantity_allocated=round(sum(c.quantity_kg for c in channels), 2),
+        total_gross_revenue=round(sum(c.gross_revenue for c in channels), 2),
+        total_transport_cost=round(sum(c.transport_cost for c in channels), 2),
+        total_spoilage_loss_value=round(sum(c.spoilage_loss_value for c in channels), 2),
+        total_net_value=round(sum(c.net_value for c in channels), 2),
+    )
+
+
+@app.post("/api/decision/whatif")
+def whatif(req: WhatIfRequest) -> WhatIfResponse:
+    data = req.produce
+    scenario = req.scenario
+    quality_mult = QUALITY_MULTIPLIER.get(data.quality, 1.0)
+
+    # Current plan — greedy on original MARKETS
+    current_raw = _greedy_allocate(data.quantity_kg, MARKETS, quality_mult, data.shelf_life_days)
+    current_plan = _plan_from_allocations(MARKETS, current_raw, quality_mult, data.shelf_life_days)
+
+    # What-if plan — greedy on modified markets / shelf life
+    modified_markets, effective_shelf = _apply_scenario(MARKETS, data, scenario)
+    if modified_markets:
+        whatif_raw = _greedy_allocate(data.quantity_kg, modified_markets, quality_mult, effective_shelf)
+        whatif_plan = _plan_from_allocations(modified_markets, whatif_raw, quality_mult, effective_shelf)
+    else:
+        whatif_plan = WhatIfPlan(
+            allocations=[],
+            total_quantity_allocated=0,
+            total_gross_revenue=0,
+            total_transport_cost=0,
+            total_spoilage_loss_value=0,
+            total_net_value=0,
+        )
+
+    return WhatIfResponse(
+        crop=data.crop,
+        quantity_kg=data.quantity_kg,
+        quality=data.quality,
+        farmer_location=data.farmer_location,
+        scenario_description=_scenario_description(scenario),
+        current_plan=current_plan,
+        whatif_plan=whatif_plan,
+        delta_net_value=round(whatif_plan.total_net_value - current_plan.total_net_value, 2),
     )
 
 
