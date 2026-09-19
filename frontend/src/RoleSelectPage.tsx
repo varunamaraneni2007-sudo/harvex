@@ -1,10 +1,10 @@
 import { useState } from 'react';
-import type { UserRole } from './lib/roleService';
+import type { UserRole, Profile } from './lib/roleService';
 import { createProfile } from './lib/roleService';
 
 interface RoleSelectPageProps {
   fullName: string | null;
-  onRoleSelected: (role: UserRole) => void;
+  onRoleSelected: (role: UserRole, profile?: Profile) => void;
 }
 
 export default function RoleSelectPage({ fullName, onRoleSelected }: RoleSelectPageProps) {
@@ -17,8 +17,8 @@ export default function RoleSelectPage({ fullName, onRoleSelected }: RoleSelectP
     setLoading(true);
     setError(null);
     try {
-      await createProfile(selected, fullName ?? undefined);
-      onRoleSelected(selected);
+      const p = await createProfile(selected, fullName ?? undefined);
+      onRoleSelected(selected, p);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Something went wrong. Please try again.');
     } finally {
