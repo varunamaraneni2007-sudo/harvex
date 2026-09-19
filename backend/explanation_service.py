@@ -167,7 +167,7 @@ def _call_anthropic(prompt: str) -> Optional[str]:
     """Call the Anthropic API and return the text, or None on any failure."""
     try:
         import anthropic
-        client = anthropic.Anthropic(api_key=_get_api_key())
+        client = anthropic.Anthropic(api_key=_get_api_key(), timeout=10.0)
         message = client.messages.create(
             model=ANTHROPIC_MODEL,
             max_tokens=512,
