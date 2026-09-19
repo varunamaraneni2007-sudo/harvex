@@ -5,6 +5,8 @@ import AuthPage from './AuthPage';
 import RoleSelectPage from './RoleSelectPage';
 import ConsentPage from './ConsentPage';
 import FarmerProfilePage from './FarmerProfilePage';
+import BuyerProfilePage from './BuyerProfilePage';
+import BuyerRequirementsPage from './BuyerRequirementsPage';
 import FarmerDashboard from './FarmerDashboard';
 import BuyerHome from './BuyerHome';
 import type { UserRole, Profile } from './lib/roleService';
@@ -176,7 +178,7 @@ function DistanceBadge({
   );
 }
 
-type View = 'home' | 'form' | 'results' | 'marketplace' | 'profile';
+type View = 'home' | 'form' | 'results' | 'marketplace' | 'profile' | 'buyer-profile' | 'buyer-requirements';
 
 // ── Strategy card ─────────────────────────────────────────────────────────────
 
@@ -1427,6 +1429,32 @@ export default function App() {
                   Profile
                 </button>
               )}
+              {role === 'buyer' && (
+                <>
+                  <button
+                    onClick={() => setView('buyer-profile')}
+                    className={`text-xs px-2.5 py-1.5 rounded-lg font-medium transition ${
+                      view === 'buyer-profile'
+                        ? 'bg-blue-100 text-blue-700'
+                        : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'
+                    }`}
+                    title="My Profile"
+                  >
+                    Profile
+                  </button>
+                  <button
+                    onClick={() => setView('buyer-requirements')}
+                    className={`text-xs px-2.5 py-1.5 rounded-lg font-medium transition ${
+                      view === 'buyer-requirements'
+                        ? 'bg-blue-100 text-blue-700'
+                        : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'
+                    }`}
+                    title="My Requirements"
+                  >
+                    Requirements
+                  </button>
+                </>
+              )}
               <span className="text-xs text-gray-500 hidden sm:inline truncate max-w-[140px]" title={user.email}>
                 {displayName}
               </span>
@@ -1461,6 +1489,8 @@ export default function App() {
             user={user}
             profile={profile}
             onGoToMarketplace={() => setView('marketplace')}
+            onGoToProfile={() => setView('buyer-profile')}
+            onGoToRequirements={() => setView('buyer-requirements')}
           />
         )}
 
@@ -2099,13 +2129,27 @@ export default function App() {
           </div>
         )}
 
-        {/* ── PROFILE VIEW ── */}
+        {/* ── FARMER PROFILE VIEW ── */}
         {view === 'profile' && role === 'farmer' && profile && (
           <FarmerProfilePage
             user={user}
             profile={profile}
             onProfileUpdated={(updated) => setProfile(updated)}
           />
+        )}
+
+        {/* ── BUYER PROFILE VIEW ── */}
+        {view === 'buyer-profile' && role === 'buyer' && profile && (
+          <BuyerProfilePage
+            user={user}
+            profile={profile}
+            onProfileUpdated={(updated) => setProfile(updated)}
+          />
+        )}
+
+        {/* ── BUYER REQUIREMENTS VIEW ── */}
+        {view === 'buyer-requirements' && role === 'buyer' && (
+          <BuyerRequirementsPage onBack={() => setView('home')} />
         )}
       </main>
 

@@ -5,9 +5,11 @@ interface BuyerHomeProps {
   user: User;
   profile: Profile;
   onGoToMarketplace: () => void;
+  onGoToProfile: () => void;
+  onGoToRequirements: () => void;
 }
 
-export default function BuyerHome({ user, profile, onGoToMarketplace }: BuyerHomeProps) {
+export default function BuyerHome({ user, profile, onGoToMarketplace, onGoToProfile, onGoToRequirements }: BuyerHomeProps) {
   const firstName = (profile.full_name ?? user.email?.split('@')[0] ?? 'Buyer').split(' ')[0];
   const location = [profile.district, profile.state].filter(Boolean).join(', ');
 
@@ -49,78 +51,72 @@ export default function BuyerHome({ user, profile, onGoToMarketplace }: BuyerHom
         </div>
       </button>
 
-      {/* ── Coming soon cards ── */}
+      {/* ── Quick actions ── */}
       <div>
-        <h2 className="font-bold text-gray-900 mb-3 px-1">Coming Soon</h2>
+        <h2 className="font-bold text-gray-900 mb-3 px-1">Quick Actions</h2>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
 
-          <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5 opacity-70">
+          <button
+            onClick={onGoToProfile}
+            className="bg-white rounded-2xl border border-blue-100 shadow-sm p-5 text-left hover:border-blue-300 hover:shadow-md transition group"
+          >
             <div className="flex items-start gap-3">
               <div className="text-2xl">👤</div>
               <div className="flex-1">
                 <div className="flex items-center gap-2 mb-1">
-                  <div className="font-bold text-gray-900 text-sm">Buyer Profile</div>
-                  <span className="text-xs px-2 py-0.5 bg-gray-100 text-gray-400 rounded-full font-medium">
-                    Soon
-                  </span>
+                  <div className="font-bold text-gray-900 text-sm group-hover:text-blue-700 transition">Buyer Profile</div>
+                  <span className="text-xs text-blue-500">→</span>
                 </div>
                 <p className="text-xs text-gray-500 leading-relaxed">
-                  Set your business details, preferred commodities, and procurement capacity
-                  to get matched with the right farmers.
+                  Set your business details, company name, and location to get matched with the right farmers.
                 </p>
               </div>
             </div>
-          </div>
+          </button>
 
-          <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5 opacity-70">
+          <button
+            onClick={onGoToRequirements}
+            className="bg-white rounded-2xl border border-blue-100 shadow-sm p-5 text-left hover:border-blue-300 hover:shadow-md transition group"
+          >
             <div className="flex items-start gap-3">
               <div className="text-2xl">📋</div>
               <div className="flex-1">
                 <div className="flex items-center gap-2 mb-1">
-                  <div className="font-bold text-gray-900 text-sm">Buyer Requirements</div>
-                  <span className="text-xs px-2 py-0.5 bg-gray-100 text-gray-400 rounded-full font-medium">
-                    Soon
-                  </span>
+                  <div className="font-bold text-gray-900 text-sm group-hover:text-blue-700 transition">My Requirements</div>
+                  <span className="text-xs text-blue-500">→</span>
                 </div>
                 <p className="text-xs text-gray-500 leading-relaxed">
-                  Post your procurement needs — crop, quantity, quality grade, and delivery
-                  window — and let farmers find you.
+                  Post your procurement needs — crop, quantity, quality, and delivery window — and let farmers find you.
                 </p>
               </div>
             </div>
-          </div>
+          </button>
 
-          <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5 opacity-70">
+          <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5 opacity-60">
             <div className="flex items-start gap-3">
               <div className="text-2xl">🤝</div>
               <div className="flex-1">
                 <div className="flex items-center gap-2 mb-1">
                   <div className="font-bold text-gray-900 text-sm">Direct Farmer Connect</div>
-                  <span className="text-xs px-2 py-0.5 bg-gray-100 text-gray-400 rounded-full font-medium">
-                    Soon
-                  </span>
+                  <span className="text-xs px-2 py-0.5 bg-gray-100 text-gray-400 rounded-full font-medium">Soon</span>
                 </div>
                 <p className="text-xs text-gray-500 leading-relaxed">
-                  Message verified farmers directly, negotiate prices, and schedule
-                  pickups without intermediaries.
+                  Message verified farmers directly, negotiate prices, and schedule pickups.
                 </p>
               </div>
             </div>
           </div>
 
-          <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5 opacity-70">
+          <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5 opacity-60">
             <div className="flex items-start gap-3">
               <div className="text-2xl">📊</div>
               <div className="flex-1">
                 <div className="flex items-center gap-2 mb-1">
                   <div className="font-bold text-gray-900 text-sm">Price Intelligence</div>
-                  <span className="text-xs px-2 py-0.5 bg-gray-100 text-gray-400 rounded-full font-medium">
-                    Soon
-                  </span>
+                  <span className="text-xs px-2 py-0.5 bg-gray-100 text-gray-400 rounded-full font-medium">Soon</span>
                 </div>
                 <p className="text-xs text-gray-500 leading-relaxed">
-                  Live APMC mandi prices, historical trends, and demand forecasts to
-                  help you time your procurement decisions.
+                  Live APMC mandi prices, historical trends, and demand forecasts.
                 </p>
               </div>
             </div>
