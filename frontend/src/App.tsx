@@ -61,6 +61,16 @@ interface MarketDiscoveryResult {
   active: boolean;
 }
 
+interface PriceInfo {
+  market_id: string;
+  commodity: string;
+  min_price_per_kg: number | null;
+  modal_price_per_kg: number | null;
+  max_price_per_kg: number | null;
+  price_date: string | null;
+  source: string;
+}
+
 interface DistanceInfo {
   market_name: string;
   location: string;
@@ -472,10 +482,12 @@ const MARKET_TYPE_STYLE: Record<string, string> = {
 
 function ApmcCard({
   market,
+  priceInfo,
   onUseInPlan,
   hasResults,
 }: {
   market: MarketDiscoveryResult;
+  priceInfo?: PriceInfo;
   onUseInPlan: () => void;
   hasResults: boolean;
 }) {
@@ -483,6 +495,9 @@ function ApmcCard({
   const commodityDisplay = market.commodities.includes('all')
     ? 'All crops accepted'
     : market.commodities.slice(0, 4).join(', ') + (market.commodities.length > 4 ? ' …' : '');
+
+  const fmtPrice = (v: number | null) =>
+    v !== null && v !== undefined ? `₹${v.toFixed(2)}/kg` : '—';
 
   return (
     <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
@@ -502,10 +517,43 @@ function ApmcCard({
           </span>
         </div>
 
-        <div className="bg-gray-50 rounded-xl px-3 py-2 mb-4">
+        <div className="bg-gray-50 rounded-xl px-3 py-2 mb-3">
           <div className="text-xs text-gray-400 font-medium mb-0.5">Commodities</div>
           <div className="text-sm text-gray-700">{commodityDisplay}</div>
         </div>
+
+        {/* Current Market Price section */}
+        {priceInfo ? (
+          <div className="bg-green-50 border border-green-100 rounded-xl px-3 py-2.5 mb-3">
+            <div className="flex items-center justify-between mb-1.5">
+              <span className="text-xs font-semibold text-green-700">Current Market Price</span>
+              <span className="text-xs text-gray-400">
+                {priceInfo.price_date ? `as of ${priceInfo.price_date}` : ''}
+              </span>
+            </div>
+            <div className="grid grid-cols-3 gap-2 text-center">
+              <div>
+                <div className="text-xs text-gray-400 mb-0.5">Min</div>
+                <div className="text-sm font-semibold text-gray-800">{fmtPrice(priceInfo.min_price_per_kg)}</div>
+              </div>
+              <div className="border-x border-green-100">
+                <div className="text-xs text-green-600 font-semibold mb-0.5">Modal</div>
+                <div className="text-sm font-bold text-green-700">{fmtPrice(priceInfo.modal_price_per_kg)}</div>
+              </div>
+              <div>
+                <div className="text-xs text-gray-400 mb-0.5">Max</div>
+                <div className="text-sm font-semibold text-gray-800">{fmtPrice(priceInfo.max_price_per_kg)}</div>
+              </div>
+            </div>
+            <div className="text-xs text-gray-400 mt-1.5 text-center">
+              Wholesale/mandi · {priceInfo.source}
+            </div>
+          </div>
+        ) : (
+          <div className="bg-gray-50 rounded-xl px-3 py-2 mb-3 text-center">
+            <span className="text-xs text-gray-400">No current price available</span>
+          </div>
+        )}
 
         <button
           onClick={onUseInPlan}
@@ -944,6 +992,7 @@ export default function App() {
 
   // Market discovery state
   const [discData, setDiscData] = useState<MarketDiscoveryResult[]>([]);
+  const [discPrices, setDiscPrices] = useState<Map<string, PriceInfo>>(new Map());
   const [mpLoading, setMpLoading] = useState(false);
   const [mpError, setMpError] = useState<string | null>(null);
   const [mpState, setMpState] = useState('');
@@ -998,6 +1047,29 @@ export default function App() {
       if (!resp.ok) throw new Error(`Server error: ${resp.status}`);
       const data: { markets: MarketDiscoveryResult[]; total: number } = await resp.json();
       setDiscData(data.markets);
+
+      // Fetch current mandi prices for the searched commodity (if any)
+      if (mpCommodity.trim()) {
+        const priceParams = new URLSearchParams({
+          commodity: mpCommodity.trim(),
+          limit: '200',
+        });
+        try {
+          const priceResp = await fetch(`/api/market-prices?${priceParams.toString()}`);
+          if (priceResp.ok) {
+            const priceData: { prices: PriceInfo[] } = await priceResp.json();
+            const priceMap = new Map<string, PriceInfo>();
+            for (const p of priceData.prices) {
+              priceMap.set(p.market_id, p);
+            }
+            setDiscPrices(priceMap);
+          }
+        } catch {
+          // Price fetch is non-critical; discovery results still show
+        }
+      } else {
+        setDiscPrices(new Map());
+      }
     } catch (err) {
       setMpError(err instanceof Error ? err.message : 'Failed to load markets.');
     } finally {
@@ -1040,6 +1112,7 @@ export default function App() {
     setWiCancelled('');
     setWiCapacity(0);
     setDiscData([]);
+    setDiscPrices(new Map());
     setMpState('');
     setMpDistrict('');
     setMpSearchQ('');
@@ -1876,6 +1949,7 @@ export default function App() {
                   <ApmcCard
                     key={market.market_id}
                     market={market}
+                    priceInfo={discPrices.get(market.market_id)}
                     onUseInPlan={() => handleUseInMyPlan(market)}
                     hasResults={!!results}
                   />

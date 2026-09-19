@@ -995,6 +995,72 @@ def markets_districts(state: str = Query(..., description="State name")):
     return {"state": state, "districts": get_repository().districts_in_state(state)}
 
 
+# ── /api/market-prices ───────────────────────────────────────────────────────
+
+@app.get("/api/market-prices")
+def market_prices(
+    commodity: Optional[str] = Query(None),
+    state: Optional[str] = Query(None),
+    district: Optional[str] = Query(None),
+    market: Optional[str] = Query(None),
+    latest: bool = Query(True),
+    limit: int = Query(50, ge=1, le=500),
+):
+    """
+    Return current wholesale (mandi) prices from the local AGMARKNET cache.
+    Prices are in ₹/kg (converted from the ₹/quintal values in AGMARKNET).
+    The cache is populated by the /api/market-prices/refresh endpoint or the
+    refresh_price_cache() CLI helper.  If the cache is absent the response
+    returns an empty list with api_configured=False.
+    """
+    from price_service import get_price_repository
+    repo = get_price_repository()
+    prices = repo.search(
+        commodity=commodity,
+        state=state,
+        district=district,
+        market=market,
+        latest=latest,
+        limit=limit,
+    )
+    configured = bool(os.getenv("AGMARKNET_API_KEY", ""))
+    return {
+        "prices": [p.model_dump() for p in prices],
+        "total": len(prices),
+        "source": "AGMARKNET/data.gov.in",
+        "unit": "₹/kg (converted from ₹/quintal)",
+        "price_type": "wholesale mandi price",
+        "cache_age_hours": repo.cache_age_hours(),
+        "api_configured": configured,
+        "note": (
+            "Populate this cache with: "
+            "AGMARKNET_API_KEY=<key> python -c "
+            "'from price_service import refresh_price_cache; refresh_price_cache()'"
+        ) if not prices else None,
+    }
+
+
+@app.post("/api/market-prices/refresh")
+def market_prices_refresh():
+    """
+    Trigger a live fetch from AGMARKNET and refresh the local price cache.
+    Requires AGMARKNET_API_KEY to be set in the environment.
+    """
+    from price_service import refresh_price_cache, get_price_repository
+    import price_service as _ps
+    key = os.getenv("AGMARKNET_API_KEY", "")
+    if not key:
+        return {
+            "success": False,
+            "message": "AGMARKNET_API_KEY is not configured",
+            "records": 0,
+        }
+    count = refresh_price_cache(api_key=key, verbose=False)
+    # Reset singleton so next call loads fresh cache
+    _ps._price_repo = None
+    return {"success": True, "records": count, "message": f"Cache refreshed: {count} records"}
+
+
 # ── /api/places — Google Places proxy (key never reaches browser) ─────────────
 
 @app.get("/api/places/autocomplete")
