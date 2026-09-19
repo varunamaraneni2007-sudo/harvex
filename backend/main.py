@@ -294,6 +294,15 @@ def _effective_spoilage_pct(base_pct: float, shelf_life_days: int) -> float:
     return base_pct
 
 
+def _eligible_markets(markets: List[dict], quality: str) -> List[dict]:
+    """Return only markets whose min_quality the farmer's produce meets."""
+    farmer_rank = QUALITY_ORDER.get(quality, 1)
+    return [
+        m for m in markets
+        if QUALITY_ORDER.get(m.get("min_quality", "Low"), 0) <= farmer_rank
+    ]
+
+
 def _true_net_per_kg(market: dict, quality_mult: float, shelf_life_days: int) -> float:
     """Net value per kg using the unweighted true formula."""
     price = market["base_price_per_kg"] * quality_mult
@@ -433,6 +442,7 @@ def _allocation_signature(strategy: AllocationStrategy) -> frozenset:
 def _run_optimize(data: ProduceInput, markets: List[dict]) -> OptimizeResponse:
     """Core optimizer; accepts any markets list (real-distance or static)."""
     quality_mult = QUALITY_MULTIPLIER.get(data.quality, 1.0)
+    markets = _eligible_markets(markets, data.quality)
 
     strategies: List[AllocationStrategy] = []
     seen_signatures: set = set()
@@ -635,12 +645,13 @@ def whatif(req: WhatIfRequest) -> WhatIfResponse:
     scenario = req.scenario
     quality_mult = QUALITY_MULTIPLIER.get(data.quality, 1.0)
 
-    # Current plan — greedy on original MARKETS
-    current_raw = _greedy_allocate(data.quantity_kg, MARKETS, quality_mult, data.shelf_life_days)
-    current_plan = _plan_from_allocations(MARKETS, current_raw, quality_mult, data.shelf_life_days)
+    # Current plan — greedy on original MARKETS (filtered by quality)
+    eligible = _eligible_markets(MARKETS, data.quality)
+    current_raw = _greedy_allocate(data.quantity_kg, eligible, quality_mult, data.shelf_life_days)
+    current_plan = _plan_from_allocations(eligible, current_raw, quality_mult, data.shelf_life_days)
 
-    # What-if plan — greedy on modified markets / shelf life
-    modified_markets, effective_shelf = _apply_scenario(MARKETS, data, scenario)
+    # What-if plan — greedy on modified markets / shelf life (also quality-filtered)
+    modified_markets, effective_shelf = _apply_scenario(eligible, data, scenario)
     if modified_markets:
         whatif_raw = _greedy_allocate(data.quantity_kg, modified_markets, quality_mult, effective_shelf)
         whatif_plan = _plan_from_allocations(modified_markets, whatif_raw, quality_mult, effective_shelf)
@@ -785,6 +796,7 @@ def _build_plan_result(
 def _run_plans(data: ProduceInput, markets: List[dict]) -> PlansResponse:
     """Core plan generator; accepts any markets list (real-distance or static)."""
     quality_mult = QUALITY_MULTIPLIER.get(data.quality, 1.0)
+    markets = _eligible_markets(markets, data.quality)
 
     raw_a = _greedy_allocate(data.quantity_kg, markets, quality_mult, data.shelf_life_days)
     raw_b = _plan_b_allocate(data.quantity_kg, markets, quality_mult, data.shelf_life_days)
