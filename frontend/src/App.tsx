@@ -3,8 +3,10 @@ import type { User } from '@supabase/supabase-js';
 import { supabase } from './lib/supabaseClient';
 import AuthPage from './AuthPage';
 import RoleSelectPage from './RoleSelectPage';
+import ConsentPage from './ConsentPage';
 import type { UserRole } from './lib/roleService';
 import { fetchProfile } from './lib/roleService';
+import { fetchConsent } from './lib/consentService';
 
 // ── API Types ─────────────────────────────────────────────────────────────────
 
@@ -972,6 +974,8 @@ export default function App() {
   const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
   const [role, setRole] = useState<UserRole | null>(null);
   const [roleLoading, setRoleLoading] = useState(false);
+  const [hasConsent, setHasConsent] = useState(false);
+  const [consentLoading, setConsentLoading] = useState(false);
 
   useEffect(() => {
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
@@ -981,21 +985,41 @@ export default function App() {
         if (nextUser) {
           setRoleLoading(true);
           fetchProfile()
-            .then((p) => setRole(p?.role ?? null))
+            .then(async (p) => {
+              const r = p?.role ?? null;
+              setRole(r);
+              if (r === 'farmer') {
+                setConsentLoading(true);
+                const c = await fetchConsent().catch(() => null);
+                setHasConsent(c !== null);
+                setConsentLoading(false);
+              }
+            })
             .catch(() => setRole(null))
             .finally(() => { setRoleLoading(false); setAuthLoading(false); });
         } else {
           setRole(null);
+          setHasConsent(false);
           setAuthLoading(false);
         }
       } else if (event === 'SIGNED_IN') {
         setRoleLoading(true);
         fetchProfile()
-          .then((p) => setRole(p?.role ?? null))
+          .then(async (p) => {
+            const r = p?.role ?? null;
+            setRole(r);
+            if (r === 'farmer') {
+              setConsentLoading(true);
+              const c = await fetchConsent().catch(() => null);
+              setHasConsent(c !== null);
+              setConsentLoading(false);
+            }
+          })
           .catch(() => setRole(null))
           .finally(() => setRoleLoading(false));
       } else if (event === 'SIGNED_OUT') {
         setRole(null);
+        setHasConsent(false);
       }
     });
     // Fallback: if INITIAL_SESSION never fires (e.g. client throws), clear loading
@@ -1281,7 +1305,7 @@ export default function App() {
     'w-full px-3 py-2.5 text-sm rounded-xl border border-gray-200 focus:ring-2 focus:ring-green-500 focus:border-green-500 outline-none transition bg-white placeholder:text-gray-300';
 
   // ── Auth gating ────────────────────────────────────────────────────────────
-  if (authLoading || roleLoading) {
+  if (authLoading || roleLoading || consentLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gradient-to-b from-green-50/60 via-white to-white">
         <div className="flex flex-col items-center gap-4">
@@ -1307,9 +1331,18 @@ export default function App() {
     return (
       <RoleSelectPage
         fullName={(user.user_metadata?.full_name as string | undefined) ?? null}
-        onRoleSelected={(r) => setRole(r)}
+        onRoleSelected={(r) => {
+          setRole(r);
+          // Buyers skip consent; farmers start without consent
+          if (r !== 'farmer') setHasConsent(true);
+        }}
       />
     );
+  }
+
+  // Consent gate — farmers only, shown once until consent is recorded
+  if (role === 'farmer' && !hasConsent) {
+    return <ConsentPage onConsented={() => setHasConsent(true)} />;
   }
 
   return (
