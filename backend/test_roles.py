@@ -207,7 +207,7 @@ def test_create_profile_creates_buyer_role():
     assert resp.json()["role"] == "buyer"
 
 
-def test_create_profile_409_when_already_exists():
+def test_create_profile_returns_stored_role_when_already_exists():
     sb = _mock_supabase_with_profile(FARMER_UID, "farmer")
     with patch("main._get_supabase", return_value=sb):
         resp = client.post(
@@ -215,13 +215,14 @@ def test_create_profile_409_when_already_exists():
             json={"role": "buyer"},   # attempting to change role
             headers={"Authorization": "Bearer token"},
         )
-    assert resp.status_code == 409
+    assert resp.status_code == 201
+    assert resp.json()["role"] == "farmer"
 
 
 # ── Role persistence: role is immutable ──────────────────────────────────────
 
 def test_role_cannot_be_changed_via_second_post():
-    """Second POST to /api/profile always returns 409 regardless of role sent."""
+    """Second POST returns the stored role rather than changing it."""
     sb = _mock_supabase_with_profile(FARMER_UID, "farmer")
     with patch("main._get_supabase", return_value=sb):
         resp = client.post(
@@ -229,7 +230,8 @@ def test_role_cannot_be_changed_via_second_post():
             json={"role": "farmer"},  # same role, still rejected
             headers={"Authorization": "Bearer token"},
         )
-    assert resp.status_code == 409
+    assert resp.status_code == 201
+    assert resp.json()["role"] == "farmer"
 
 
 # ── /api/submission stores user_id ───────────────────────────────────────────
@@ -429,7 +431,7 @@ def test_buyer_registration_sequence():
 
 
 def test_buyer_role_is_immutable_after_registration():
-    """Once registered as buyer, a second POST cannot change the role."""
+    """Once registered as buyer, a second POST returns the stored buyer role."""
     sb = _mock_supabase_with_profile(BUYER_UID, "buyer")
     with patch("main._get_supabase", return_value=sb):
         resp = client.post(
@@ -437,7 +439,8 @@ def test_buyer_role_is_immutable_after_registration():
             json={"role": "farmer"},
             headers={"Authorization": "Bearer token"},
         )
-    assert resp.status_code == 409
+    assert resp.status_code == 201
+    assert resp.json()["role"] == "buyer"
 
 
 def test_buyer_registration_requires_auth():

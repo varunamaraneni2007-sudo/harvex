@@ -18,7 +18,9 @@ export default function RoleSelectPage({ fullName, onRoleSelected }: RoleSelectP
     setError(null);
     try {
       const p = await selectRole(selected, fullName ?? undefined);
-      onRoleSelected(selected, p ?? undefined);
+      // Existing accounts keep their immutable database role. The POST
+      // returns that profile, so never route from the browser selection alone.
+      onRoleSelected(p?.role ?? selected, p ?? undefined);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Something went wrong. Please try again.');
     } finally {

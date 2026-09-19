@@ -114,11 +114,12 @@ describe('createProfile — buyer', () => {
     await expect(createProfile('buyer', 'Priya')).rejects.toThrow(/not authenticated/i);
   });
 
-  it('throws with the API error detail on 409 (profile already exists)', async () => {
+  it('returns the stored profile when backend reports an existing account', async () => {
     withSession();
-    mockFetch(409, { detail: 'Profile already exists.' });
+    mockFetch(201, FARMER_PROFILE);
 
-    await expect(createProfile('buyer', 'Priya')).rejects.toThrow('Profile already exists.');
+    const profile = await createProfile('buyer', 'Priya');
+    expect(profile.role).toBe('farmer');
   });
 
   it('throws on server error 500', async () => {
@@ -276,6 +277,16 @@ describe('fetchProfile with accessToken — existing-user routing', () => {
 });
 
 describe('selectRole — profile-independent authentication flow', () => {
+  it('uses the stored role returned for an existing account', async () => {
+    withSession();
+    mockFetch(201, FARMER_PROFILE);
+
+    const profile = await selectRole('buyer', 'Existing Farmer');
+
+    expect(profile?.role).toBe('farmer');
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+  });
+
   it('continues without GET /api/profile after an existing-profile conflict', async () => {
     withSession();
     mockFetch(409, { detail: 'Profile already exists. Role cannot be changed.' });
@@ -348,7 +359,7 @@ describe('Buyer registration flow', () => {
     expect(farmer.id).not.toBe(buyer.id);
   });
 
-  it('buyer with existing profile gets 409 on second registration attempt', async () => {
+  it('keeps compatibility with an older backend returning 409', async () => {
     withSession();
     mockFetch(409, { detail: 'Profile already exists.' });
 

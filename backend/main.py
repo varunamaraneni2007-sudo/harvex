@@ -121,7 +121,8 @@ def get_profile(authorization: Optional[str] = Header(default=None)):
 def create_profile(payload: ProfilePayload, authorization: Optional[str] = Header(default=None)):
     """
     Create the user's profile with their chosen role.
-    Roles are immutable after creation — subsequent calls return 409.
+    Roles are immutable after creation. For an existing account, return the
+    stored profile so the frontend routes with the authoritative role.
     """
     if payload.role not in ("farmer", "consumer", "buyer"):
         raise HTTPException(status_code=422, detail="role must be 'farmer', 'consumer', or 'buyer'.")
@@ -130,9 +131,9 @@ def create_profile(payload: ProfilePayload, authorization: Optional[str] = Heade
     if sb is None:
         raise HTTPException(status_code=503, detail="Database not configured.")
     try:
-        existing = sb.table("profiles").select("id,role").eq("id", uid).execute()
+        existing = sb.table("profiles").select(_PROFILE_FIELDS).eq("id", uid).execute()
         if existing.data:
-            raise HTTPException(status_code=409, detail="Profile already exists. Role cannot be changed.")
+            return existing.data[0]
         row = {"id": uid, "role": payload.role}
         if payload.full_name:
             row["full_name"] = payload.full_name.strip()
