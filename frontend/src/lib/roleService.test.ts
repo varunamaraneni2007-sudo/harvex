@@ -216,6 +216,65 @@ describe('updateProfile', () => {
   });
 });
 
+// ── Role-routing: existing users skip role selection ──────────────────────────
+
+describe('fetchProfile with accessToken — existing-user routing', () => {
+  it('existing farmer: returns farmer profile when token is passed directly', async () => {
+    // getSession must NOT be called — token is provided by the auth callback
+    mockFetch(200, FARMER_PROFILE);
+
+    const profile = await fetchProfile('direct-farmer-token');
+
+    expect(profile).not.toBeNull();
+    expect(profile!.role).toBe('farmer');
+    // getSession was never called (no withSession() setup needed)
+    expect(mockGetSession).not.toHaveBeenCalled();
+  });
+
+  it('existing buyer: returns buyer profile when token is passed directly', async () => {
+    mockFetch(200, BUYER_PROFILE);
+
+    const profile = await fetchProfile('direct-buyer-token');
+
+    expect(profile).not.toBeNull();
+    expect(profile!.role).toBe('buyer');
+    expect(mockGetSession).not.toHaveBeenCalled();
+  });
+
+  it('new user: returns null when profile does not exist yet (404)', async () => {
+    withSession();
+    mockFetch(404, {});
+
+    const profile = await fetchProfile();
+    expect(profile).toBeNull();
+  });
+
+  it('role cannot be changed: createProfile throws 409 when profile already exists', async () => {
+    withSession();
+    mockFetch(409, { detail: 'Profile already exists. Role cannot be changed.' });
+
+    await expect(createProfile('buyer', 'Existing User')).rejects.toThrow(
+      'Profile already exists. Role cannot be changed.',
+    );
+  });
+
+  it('existing farmer token is forwarded in Authorization header without calling getSession', async () => {
+    const spy = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve(FARMER_PROFILE),
+    });
+    vi.stubGlobal('fetch', spy);
+
+    await fetchProfile('token-from-callback');
+
+    const [url, opts] = (spy.mock.calls[0] as [string, RequestInit & { headers: Record<string, string> }]);
+    expect(url).toBe('/api/profile');
+    expect(opts.headers['Authorization']).toBe('Bearer token-from-callback');
+    expect(mockGetSession).not.toHaveBeenCalled();
+  });
+});
+
 // ── Buyer registration flow (service layer) ───────────────────────────────────
 
 describe('Buyer registration flow', () => {

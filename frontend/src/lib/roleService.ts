@@ -26,13 +26,21 @@ export interface ProfileUpdate {
 /**
  * Fetch the authenticated user's profile from the backend.
  * Returns null when no profile exists yet (first login after registration).
+ *
+ * Pass accessToken when calling from inside an onAuthStateChange callback to
+ * avoid calling getSession() while Supabase's internal state is still settling,
+ * which can transiently return null and incorrectly show the role-selection page
+ * to an existing user.
  */
-export async function fetchProfile(): Promise<Profile | null> {
-  const { data: { session } } = await supabase.auth.getSession();
-  if (!session) return null;
-
+export async function fetchProfile(accessToken?: string): Promise<Profile | null> {
+  let token = accessToken;
+  if (!token) {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) return null;
+    token = session.access_token;
+  }
   const resp = await fetch('/api/profile', {
-    headers: { Authorization: `Bearer ${session.access_token}` },
+    headers: { Authorization: `Bearer ${token}` },
   });
   if (resp.status === 404) return null;
   if (!resp.ok) throw new Error(`Failed to fetch profile: ${resp.status}`);

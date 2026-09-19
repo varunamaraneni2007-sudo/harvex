@@ -989,15 +989,18 @@ export default function App() {
       setUser(nextUser);
       if (event === 'INITIAL_SESSION') {
         if (nextUser) {
+          // Pass the token from the callback directly so we never call
+          // getSession() while Supabase's internal state is still settling.
+          const token = session?.access_token;
           setRoleLoading(true);
-          fetchProfile()
+          fetchProfile(token)
             .then(async (p) => {
               const r = p?.role ?? null;
               setRole(r);
               setProfile(p);
               if (r === 'farmer') {
                 setConsentLoading(true);
-                const c = await fetchConsent().catch(() => null);
+                const c = await fetchConsent(token).catch(() => null);
                 setHasConsent(c !== null);
                 setConsentLoading(false);
               }
@@ -1011,15 +1014,16 @@ export default function App() {
           setAuthLoading(false);
         }
       } else if (event === 'SIGNED_IN') {
+        const token = session?.access_token;
         setRoleLoading(true);
-        fetchProfile()
+        fetchProfile(token)
           .then(async (p) => {
             const r = p?.role ?? null;
             setRole(r);
             setProfile(p);
             if (r === 'farmer') {
               setConsentLoading(true);
-              const c = await fetchConsent().catch(() => null);
+              const c = await fetchConsent(token).catch(() => null);
               setHasConsent(c !== null);
               setConsentLoading(false);
             }
