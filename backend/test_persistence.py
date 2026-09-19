@@ -194,3 +194,55 @@ def test_submission_all_plans_present():
     assert resp.plans.plan_a.plan_label == "A"
     assert resp.plans.plan_b.plan_label == "B"
     assert resp.plans.plan_c.plan_label == "C"
+
+
+# ── [Step 26] Farmer data ownership & persistence ────────────────────────────
+
+def test_save_attaches_user_id_when_provided():
+    """user_id from the JWT must be stored in the farmer_inputs row."""
+    data = _input()
+    opt = optimize(data)
+    pl = plans(data)
+    sb = _mock_supabase()
+    with patch("main._get_supabase", return_value=sb):
+        _save_to_supabase(data, opt, pl, user_id="farmer-uid-abc123")
+    # First insert call is always farmer_inputs
+    first_insert_call = sb.table.return_value.insert.call_args_list[0]
+    row = first_insert_call.args[0]
+    assert row.get("user_id") == "farmer-uid-abc123"
+
+
+def test_save_omits_user_id_when_not_provided():
+    """Anonymous submissions must not include a user_id key at all."""
+    data = _input()
+    opt = optimize(data)
+    pl = plans(data)
+    sb = _mock_supabase()
+    with patch("main._get_supabase", return_value=sb):
+        _save_to_supabase(data, opt, pl, user_id=None)
+    first_insert_call = sb.table.return_value.insert.call_args_list[0]
+    row = first_insert_call.args[0]
+    assert "user_id" not in row
+
+
+def test_save_different_user_ids_produce_independent_rows():
+    """Two separate saves with different user IDs must each write their own row."""
+    data = _input()
+    opt = optimize(data)
+    pl = plans(data)
+
+    sb_a = _mock_supabase()
+    sb_b = _mock_supabase()
+
+    with patch("main._get_supabase", return_value=sb_a):
+        id_a = _save_to_supabase(data, opt, pl, user_id="farmer-a")
+    with patch("main._get_supabase", return_value=sb_b):
+        id_b = _save_to_supabase(data, opt, pl, user_id="farmer-b")
+
+    assert id_a is not None
+    assert id_b is not None
+    # Both calls used their own distinct user IDs
+    row_a = sb_a.table.return_value.insert.call_args_list[0].args[0]
+    row_b = sb_b.table.return_value.insert.call_args_list[0].args[0]
+    assert row_a["user_id"] == "farmer-a"
+    assert row_b["user_id"] == "farmer-b"

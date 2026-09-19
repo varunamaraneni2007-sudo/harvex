@@ -1205,6 +1205,12 @@ export default function App() {
 
   const handleStart = () => {
     resetAll();
+    // Pre-fill location from the farmer's saved profile so they don't have to
+    // retype their farm location on every submission.
+    if (role === 'farmer' && profile) {
+      const loc = [profile.district, profile.state].filter(Boolean).join(', ');
+      if (loc) setFarmerLocation(loc);
+    }
     setView('form');
   };
 

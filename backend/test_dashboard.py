@@ -188,3 +188,44 @@ def test_submissions_limit_out_of_range_returns_422():
             headers={"Authorization": "Bearer token"},
         )
     assert resp.status_code == 422
+
+
+# ── [Step 26] Data ownership / isolation ─────────────────────────────────────
+
+def test_submissions_filters_by_jwt_user_id():
+    """The endpoint must pass the JWT user's UID — not a caller-supplied value — to the DB filter."""
+    sb = _mock_sb_with_submissions(FARMER_UID)
+    with patch("main._get_supabase", return_value=sb):
+        resp = client.get(
+            "/api/farmer/submissions",
+            headers={"Authorization": "Bearer token"},
+        )
+    assert resp.status_code == 200
+    # Verify that eq("user_id", FARMER_UID) was called on the farmer_inputs query
+    eq_calls = sb.table.return_value.select.return_value.eq.call_args_list
+    user_id_filters = [c for c in eq_calls if c.args and c.args[0] == "user_id"]
+    assert any(c.args[1] == FARMER_UID for c in user_id_filters), (
+        "The user_id filter must use the UID from the JWT, not an arbitrary value"
+    )
+
+
+def test_submissions_different_uids_see_different_data():
+    """Two farmers with different UIDs get only their own submissions."""
+    FARMER_A = "aaaaaaaa-0000-0000-0000-000000000033"
+    FARMER_B = "bbbbbbbb-0000-0000-0000-000000000099"
+
+    input_a = {**SAMPLE_INPUT, "id": "fa-0001", "crop": "Tomato"}
+    input_b = {**SAMPLE_INPUT, "id": "fb-0001", "crop": "Onion"}
+
+    sb_a = _mock_sb_with_submissions(FARMER_A, inputs=[input_a])
+    sb_b = _mock_sb_with_submissions(FARMER_B, inputs=[input_b])
+
+    with patch("main._get_supabase", return_value=sb_a):
+        resp_a = client.get("/api/farmer/submissions", headers={"Authorization": "Bearer tokenA"})
+    with patch("main._get_supabase", return_value=sb_b):
+        resp_b = client.get("/api/farmer/submissions", headers={"Authorization": "Bearer tokenB"})
+
+    assert resp_a.status_code == 200
+    assert resp_b.status_code == 200
+    assert resp_a.json()["submissions"][0]["farmer_input"]["crop"] == "Tomato"
+    assert resp_b.json()["submissions"][0]["farmer_input"]["crop"] == "Onion"
