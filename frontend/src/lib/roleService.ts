@@ -1,6 +1,6 @@
 import { supabase } from './supabaseClient';
 
-export type UserRole = 'farmer' | 'buyer';
+export type UserRole = 'farmer' | 'consumer' | 'buyer';
 
 export interface Profile {
   id: string;
@@ -11,6 +11,11 @@ export interface Profile {
   district: string | null;
   company_name: string | null;
   business_type: string | null;
+  public_id?: string | null;
+  address?: string | null;
+  average_rating?: number;
+  total_ratings?: number;
+  completed_transactions?: number;
   created_at: string;
 }
 

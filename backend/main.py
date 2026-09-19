@@ -82,11 +82,11 @@ def health_check():
 
 # ── [Step 21] Profile endpoints ───────────────────────────────────────────────
 
-_PROFILE_FIELDS = "id,role,full_name,phone,state,district,company_name,business_type,created_at"
+_PROFILE_FIELDS = "id,role,public_id,full_name,phone,state,district,address,company_name,business_type,average_rating,total_ratings,completed_transactions,created_at"
 
 
 class ProfilePayload(BaseModel):
-    role: str        # 'farmer' | 'buyer'
+    role: str        # 'farmer' | 'consumer' | 'buyer'
     full_name: Optional[str] = None
 
 
@@ -123,8 +123,8 @@ def create_profile(payload: ProfilePayload, authorization: Optional[str] = Heade
     Create the user's profile with their chosen role.
     Roles are immutable after creation — subsequent calls return 409.
     """
-    if payload.role not in ("farmer", "buyer"):
-        raise HTTPException(status_code=422, detail="role must be 'farmer' or 'buyer'.")
+    if payload.role not in ("farmer", "consumer", "buyer"):
+        raise HTTPException(status_code=422, detail="role must be 'farmer', 'consumer', or 'buyer'.")
     uid = _require_user_id(authorization)
     sb = _get_supabase()
     if sb is None:
@@ -1791,6 +1791,182 @@ def marketplace(
     order = {"Suitable": 0, "Partial": 1, "Not Suitable": 2, "Unknown": 3}
     cards.sort(key=lambda c: (order.get(c.suitability, 3), -c.base_price_per_kg))
     return cards
+
+
+# ── Transactional farmer marketplace ────────────────────────────────────────
+
+def _marketplace_profile(sb, uid: str) -> dict:
+    response = sb.table("profiles").select("id,role,public_id,average_rating,total_ratings").eq("id", uid).execute()
+    if not response.data:
+        raise HTTPException(status_code=403, detail="Complete role selection first.")
+    return response.data[0]
+
+
+def _require_marketplace_role(sb, uid: str, allowed: tuple[str, ...]) -> dict:
+    profile = _marketplace_profile(sb, uid)
+    if profile.get("role") not in allowed:
+        raise HTTPException(status_code=403, detail="This action is not available for your role.")
+    return profile
+
+
+class CropListingPayload(BaseModel):
+    crop_name: str
+    available_quantity_kg: float
+    price_per_kg: float
+    quality: str
+    harvest_date: str
+    location: str
+    status: str = "available"
+    photo_paths: List[str] = []
+
+
+class MarketplaceOrderPayload(BaseModel):
+    crop_name: str
+    quantity_kg: float
+    quality: Optional[str] = None
+
+
+class OrderStatusPayload(BaseModel):
+    status: str
+
+
+class RatingPayload(BaseModel):
+    order_item_id: str
+    rating: int
+    review_text: Optional[str] = None
+
+
+@app.get("/api/crop-listings")
+def list_crop_listings(crop: Optional[str] = None, authorization: Optional[str] = Header(default=None)):
+    uid = _require_user_id(authorization)
+    sb = _get_supabase()
+    if sb is None:
+        raise HTTPException(status_code=503, detail="Database not configured.")
+    _require_marketplace_role(sb, uid, ("farmer", "consumer", "buyer"))
+    query = sb.table("crop_listings").select("*,profiles!crop_listings_farmer_id_fkey(public_id,full_name,average_rating,total_ratings)").eq("status", "available")
+    if crop and crop.strip():
+        query = query.ilike("crop_name", f"%{crop.strip()}%")
+    try:
+        return {"listings": query.order("created_at", desc=True).execute().data or []}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/api/farmer/listings")
+def farmer_listings(authorization: Optional[str] = Header(default=None)):
+    uid = _require_user_id(authorization)
+    sb = _get_supabase()
+    if sb is None:
+        raise HTTPException(status_code=503, detail="Database not configured.")
+    _require_marketplace_role(sb, uid, ("farmer",))
+    return {"listings": sb.table("crop_listings").select("*").eq("farmer_id", uid).order("created_at", desc=True).execute().data or []}
+
+
+@app.post("/api/farmer/listings", status_code=201)
+def create_crop_listing(payload: CropListingPayload, authorization: Optional[str] = Header(default=None)):
+    uid = _require_user_id(authorization)
+    sb = _get_supabase()
+    if sb is None:
+        raise HTTPException(status_code=503, detail="Database not configured.")
+    _require_marketplace_role(sb, uid, ("farmer",))
+    if payload.available_quantity_kg <= 0 or payload.price_per_kg <= 0:
+        raise HTTPException(status_code=422, detail="Quantity and price must be positive.")
+    if payload.quality not in ("Premium", "Standard", "Low") or payload.status not in ("draft", "available"):
+        raise HTTPException(status_code=422, detail="Invalid quality or listing status.")
+    if payload.status == "available" and not payload.photo_paths:
+        raise HTTPException(status_code=422, detail="At least one actual product photo is required to publish.")
+    prefix = f"{uid}/"
+    if any(not path.startswith(prefix) for path in payload.photo_paths):
+        raise HTTPException(status_code=403, detail="A photo does not belong to this farmer.")
+    row = payload.model_dump()
+    row["farmer_id"] = uid
+    try:
+        response = sb.table("crop_listings").insert(row).execute()
+        return response.data[0]
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/api/marketplace/orders", status_code=201)
+def place_order(payload: MarketplaceOrderPayload, authorization: Optional[str] = Header(default=None)):
+    uid = _require_user_id(authorization)
+    sb = _get_supabase()
+    if sb is None:
+        raise HTTPException(status_code=503, detail="Database not configured.")
+    _require_marketplace_role(sb, uid, ("consumer", "buyer"))
+    if payload.quantity_kg <= 0:
+        raise HTTPException(status_code=422, detail="Quantity must be positive.")
+    try:
+        response = sb.rpc("place_marketplace_order", {
+            "p_purchaser": uid, "p_crop": payload.crop_name,
+            "p_quantity": payload.quantity_kg, "p_quality": payload.quality,
+        }).execute()
+        return {"order_id": response.data, "status": "Pending"}
+    except Exception as exc:
+        message = str(exc)
+        status = 409 if "stock" in message.lower() else 422
+        raise HTTPException(status_code=status, detail=message)
+
+
+@app.get("/api/marketplace/orders")
+def order_history(authorization: Optional[str] = Header(default=None)):
+    uid = _require_user_id(authorization)
+    sb = _get_supabase()
+    if sb is None:
+        raise HTTPException(status_code=503, detail="Database not configured.")
+    profile = _require_marketplace_role(sb, uid, ("farmer", "consumer", "buyer"))
+    if profile["role"] == "farmer":
+        data = sb.table("order_items").select("*,marketplace_orders(*),crop_listings(crop_name,photo_paths),farmer_ratings(id,rating,review_text)").eq("farmer_id", uid).execute().data
+    else:
+        data = sb.table("marketplace_orders").select("*,order_items(*,crop_listings(crop_name,photo_paths),farmer_ratings(id,rating))").eq("purchaser_id", uid).execute().data
+    return {"orders": data or []}
+
+
+@app.patch("/api/farmer/order-items/{item_id}")
+def update_order_item_status(item_id: str, payload: OrderStatusPayload, authorization: Optional[str] = Header(default=None)):
+    uid = _require_user_id(authorization)
+    sb = _get_supabase()
+    if sb is None:
+        raise HTTPException(status_code=503, detail="Database not configured.")
+    _require_marketplace_role(sb, uid, ("farmer",))
+    allowed = ("Accepted", "Rejected", "Processing", "Ready", "Completed")
+    if payload.status not in allowed:
+        raise HTTPException(status_code=422, detail="Invalid farmer order status.")
+    existing = sb.table("order_items").select("id,status").eq("id", item_id).eq("farmer_id", uid).execute().data
+    if not existing:
+        raise HTTPException(status_code=404, detail="Order item not found.")
+    transitions = {
+        "Pending": {"Accepted", "Rejected"},
+        "Accepted": {"Processing", "Rejected"},
+        "Processing": {"Ready"},
+        "Ready": {"Completed"},
+    }
+    if payload.status not in transitions.get(existing[0]["status"], set()):
+        raise HTTPException(status_code=409, detail="Invalid order status transition.")
+    return sb.table("order_items").update({"status": payload.status}).eq("id", item_id).eq("farmer_id", uid).execute().data[0]
+
+
+@app.post("/api/marketplace/ratings", status_code=201)
+def rate_farmer(payload: RatingPayload, authorization: Optional[str] = Header(default=None)):
+    uid = _require_user_id(authorization)
+    sb = _get_supabase()
+    if sb is None:
+        raise HTTPException(status_code=503, detail="Database not configured.")
+    _require_marketplace_role(sb, uid, ("consumer", "buyer"))
+    if payload.rating < 1 or payload.rating > 5:
+        raise HTTPException(status_code=422, detail="Rating must be between 1 and 5.")
+    items = sb.table("order_items").select("id,farmer_id,status,marketplace_orders!inner(purchaser_id)").eq("id", payload.order_item_id).execute().data
+    if not items or items[0]["marketplace_orders"]["purchaser_id"] != uid:
+        raise HTTPException(status_code=403, detail="You cannot rate this transaction.")
+    item = items[0]
+    if item["status"] != "Completed":
+        raise HTTPException(status_code=409, detail="Only completed transactions can be rated.")
+    row = {"order_item_id": payload.order_item_id, "farmer_id": item["farmer_id"], "reviewer_id": uid,
+           "rating": payload.rating, "review_text": (payload.review_text or "").strip() or None}
+    try:
+        return sb.table("farmer_ratings").insert(row).execute().data[0]
+    except Exception as exc:
+        raise HTTPException(status_code=409, detail="This transaction has already been rated.") from exc
 
 
 if __name__ == "__main__":

@@ -34,8 +34,14 @@ export default function RoleSelectPage({ fullName, onRoleSelected }: RoleSelectP
       icon: '🌾',
     },
     {
+      value: 'consumer',
+      label: 'Consumer',
+      desc: 'I want to buy fresh produce directly from farmers.',
+      icon: '🧺',
+    },
+    {
       value: 'buyer',
-      label: 'Buyer',
+      label: 'Market / Buyer',
       desc: 'I purchase agricultural produce from farmers and mandis.',
       icon: '🏪',
     },

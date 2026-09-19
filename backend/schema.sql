@@ -290,3 +290,223 @@ CREATE POLICY "buyer_requirements: owner delete"
 -- Note: the backend uses the service_role key which bypasses RLS, so
 -- server-side inserts (via /api/submission) continue to work without
 -- needing the authenticated user's JWT on the backend.
+
+-- ── Transactional marketplace (Supabase implementation) ──────────────────────────────
+-- This extends the existing Harvex account model; it does not replace Auth.
+ALTER TABLE profiles DROP CONSTRAINT IF EXISTS profiles_role_check;
+ALTER TABLE profiles ADD CONSTRAINT profiles_role_check
+    CHECK (role IN ('farmer', 'consumer', 'buyer'));
+ALTER TABLE profiles ADD COLUMN IF NOT EXISTS public_id TEXT UNIQUE;
+ALTER TABLE profiles ADD COLUMN IF NOT EXISTS address TEXT;
+ALTER TABLE profiles ADD COLUMN IF NOT EXISTS average_rating NUMERIC NOT NULL DEFAULT 0;
+ALTER TABLE profiles ADD COLUMN IF NOT EXISTS total_ratings INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE profiles ADD COLUMN IF NOT EXISTS completed_transactions INTEGER NOT NULL DEFAULT 0;
+-- Account IDs, roles and reputation counters are backend-owned.
+DROP POLICY IF EXISTS "profiles: owner insert" ON profiles;
+REVOKE INSERT, UPDATE ON profiles FROM authenticated;
+GRANT SELECT ON profiles TO authenticated;
+
+CREATE SEQUENCE IF NOT EXISTS farmer_public_id_seq;
+CREATE SEQUENCE IF NOT EXISTS consumer_public_id_seq;
+CREATE SEQUENCE IF NOT EXISTS buyer_public_id_seq;
+
+CREATE OR REPLACE FUNCTION assign_harvex_public_id() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+BEGIN
+  IF NEW.public_id IS NULL THEN
+    NEW.public_id := CASE NEW.role
+      WHEN 'farmer' THEN 'F' || lpad(nextval('farmer_public_id_seq')::text, 3, '0')
+      WHEN 'consumer' THEN 'C' || lpad(nextval('consumer_public_id_seq')::text, 3, '0')
+      WHEN 'buyer' THEN 'B' || lpad(nextval('buyer_public_id_seq')::text, 3, '0')
+    END;
+  END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS profiles_assign_public_id ON profiles;
+CREATE TRIGGER profiles_assign_public_id BEFORE INSERT ON profiles
+FOR EACH ROW EXECUTE FUNCTION assign_harvex_public_id();
+
+CREATE TABLE IF NOT EXISTS crop_listings (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  farmer_id UUID NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  crop_name TEXT NOT NULL,
+  available_quantity_kg NUMERIC NOT NULL CHECK (available_quantity_kg >= 0),
+  price_per_kg NUMERIC NOT NULL CHECK (price_per_kg > 0),
+  quality TEXT NOT NULL CHECK (quality IN ('Premium','Standard','Low')),
+  harvest_date DATE NOT NULL,
+  location TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','available','unavailable')),
+  photo_paths TEXT[] NOT NULL DEFAULT '{}',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS marketplace_orders (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  purchaser_id UUID NOT NULL REFERENCES profiles(id),
+  crop_name TEXT NOT NULL,
+  requested_quantity_kg NUMERIC NOT NULL CHECK (requested_quantity_kg > 0),
+  status TEXT NOT NULL DEFAULT 'Pending'
+    CHECK (status IN ('Pending','Accepted','Rejected','Processing','Ready','Completed','Cancelled')),
+  total_price NUMERIC NOT NULL DEFAULT 0 CHECK (total_price >= 0),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS order_items (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  order_id UUID NOT NULL REFERENCES marketplace_orders(id) ON DELETE CASCADE,
+  listing_id UUID NOT NULL REFERENCES crop_listings(id),
+  farmer_id UUID NOT NULL REFERENCES profiles(id),
+  quantity_kg NUMERIC NOT NULL CHECK (quantity_kg > 0),
+  price_per_kg NUMERIC NOT NULL CHECK (price_per_kg > 0),
+  status TEXT NOT NULL DEFAULT 'Pending'
+    CHECK (status IN ('Pending','Accepted','Rejected','Processing','Ready','Completed','Cancelled')),
+  UNIQUE(order_id, listing_id)
+);
+
+CREATE TABLE IF NOT EXISTS farmer_ratings (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  order_item_id UUID NOT NULL UNIQUE REFERENCES order_items(id) ON DELETE CASCADE,
+  farmer_id UUID NOT NULL REFERENCES profiles(id),
+  reviewer_id UUID NOT NULL REFERENCES profiles(id),
+  rating INTEGER NOT NULL CHECK (rating BETWEEN 1 AND 5),
+  review_text TEXT CHECK (char_length(review_text) <= 1000),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CHECK (farmer_id <> reviewer_id)
+);
+
+CREATE TABLE IF NOT EXISTS platform_config (
+  key TEXT PRIMARY KEY,
+  value_numeric NUMERIC NOT NULL CHECK (value_numeric > 0),
+  description TEXT NOT NULL
+);
+INSERT INTO platform_config(key,value_numeric,description) VALUES
+ ('consumer_order_limit_kg',150,'Maximum consumer order quantity'),
+ ('buyer_order_limit_kg',1000,'Maximum market/buyer order quantity'),
+ ('buyer_per_farmer_limit_kg',500,'Maximum allocation from one farmer to one buyer order')
+ON CONFLICT (key) DO NOTHING;
+
+CREATE INDEX IF NOT EXISTS crop_listings_search_idx ON crop_listings(crop_name,status);
+CREATE INDEX IF NOT EXISTS marketplace_orders_purchaser_idx ON marketplace_orders(purchaser_id);
+CREATE INDEX IF NOT EXISTS order_items_farmer_idx ON order_items(farmer_id);
+
+ALTER TABLE crop_listings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE marketplace_orders ENABLE ROW LEVEL SECURITY;
+ALTER TABLE order_items ENABLE ROW LEVEL SECURITY;
+ALTER TABLE farmer_ratings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE platform_config ENABLE ROW LEVEL SECURITY;
+
+-- Published stock is visible only to signed-in users; farmers manage only theirs.
+DROP POLICY IF EXISTS "listings: authenticated read available" ON crop_listings;
+CREATE POLICY "listings: authenticated read available" ON crop_listings FOR SELECT TO authenticated
+USING (status = 'available' OR farmer_id = auth.uid());
+DROP POLICY IF EXISTS "listings: farmer insert own" ON crop_listings;
+CREATE POLICY "listings: farmer insert own" ON crop_listings FOR INSERT TO authenticated
+WITH CHECK (farmer_id = auth.uid() AND EXISTS (SELECT 1 FROM profiles p WHERE p.id=auth.uid() AND p.role='farmer'));
+DROP POLICY IF EXISTS "listings: farmer update own" ON crop_listings;
+CREATE POLICY "listings: farmer update own" ON crop_listings FOR UPDATE TO authenticated
+USING (farmer_id = auth.uid()) WITH CHECK (farmer_id = auth.uid());
+DROP POLICY IF EXISTS "listings: farmer delete own" ON crop_listings;
+CREATE POLICY "listings: farmer delete own" ON crop_listings FOR DELETE TO authenticated USING (farmer_id = auth.uid());
+DROP POLICY IF EXISTS "orders: purchaser read own" ON marketplace_orders;
+CREATE POLICY "orders: purchaser read own" ON marketplace_orders FOR SELECT TO authenticated USING (purchaser_id=auth.uid());
+DROP POLICY IF EXISTS "order items: participant read" ON order_items;
+CREATE POLICY "order items: participant read" ON order_items FOR SELECT TO authenticated
+USING (farmer_id=auth.uid() OR EXISTS (SELECT 1 FROM marketplace_orders o WHERE o.id=order_id AND o.purchaser_id=auth.uid()));
+DROP POLICY IF EXISTS "ratings: authenticated read" ON farmer_ratings;
+CREATE POLICY "ratings: authenticated read" ON farmer_ratings FOR SELECT TO authenticated USING (true);
+DROP POLICY IF EXISTS "config: authenticated read" ON platform_config;
+CREATE POLICY "config: authenticated read" ON platform_config FOR SELECT TO authenticated USING (true);
+
+REVOKE ALL ON crop_listings, marketplace_orders, order_items, farmer_ratings, platform_config FROM anon;
+GRANT SELECT,INSERT,UPDATE,DELETE ON crop_listings TO authenticated;
+GRANT SELECT ON marketplace_orders,order_items,farmer_ratings,platform_config TO authenticated;
+GRANT ALL ON crop_listings,marketplace_orders,order_items,farmer_ratings,platform_config TO service_role;
+GRANT USAGE,SELECT ON farmer_public_id_seq,consumer_public_id_seq,buyer_public_id_seq TO service_role;
+
+-- Private bucket. Signed URLs are created by the backend after authorization.
+INSERT INTO storage.buckets(id,name,public) VALUES ('product-photos','product-photos',false)
+ON CONFLICT (id) DO UPDATE SET public=false;
+DROP POLICY IF EXISTS "product photos: farmer upload own folder" ON storage.objects;
+CREATE POLICY "product photos: farmer upload own folder" ON storage.objects FOR INSERT TO authenticated
+WITH CHECK (bucket_id='product-photos' AND (storage.foldername(name))[1]=auth.uid()::text
+  AND EXISTS (SELECT 1 FROM profiles p WHERE p.id=auth.uid() AND p.role='farmer'));
+DROP POLICY IF EXISTS "product photos: listing participants read" ON storage.objects;
+CREATE POLICY "product photos: listing participants read" ON storage.objects FOR SELECT TO authenticated
+USING (bucket_id='product-photos' AND EXISTS (
+  SELECT 1 FROM crop_listings l WHERE name=ANY(l.photo_paths)
+    AND (l.status='available' OR l.farmer_id=auth.uid() OR EXISTS (
+      SELECT 1 FROM order_items oi JOIN marketplace_orders o ON o.id=oi.order_id
+      WHERE oi.listing_id=l.id AND (oi.farmer_id=auth.uid() OR o.purchaser_id=auth.uid())
+    ))
+));
+DROP POLICY IF EXISTS "product photos: farmer manage own" ON storage.objects;
+CREATE POLICY "product photos: farmer manage own" ON storage.objects FOR UPDATE TO authenticated
+USING (bucket_id='product-photos' AND owner_id=auth.uid()::text);
+DROP POLICY IF EXISTS "product photos: farmer delete own" ON storage.objects;
+CREATE POLICY "product photos: farmer delete own" ON storage.objects FOR DELETE TO authenticated
+USING (bucket_id='product-photos' AND owner_id=auth.uid()::text);
+
+-- Atomic order allocation prevents overselling under concurrent requests.
+CREATE OR REPLACE FUNCTION place_marketplace_order(
+  p_purchaser UUID, p_crop TEXT, p_quantity NUMERIC, p_quality TEXT DEFAULT NULL
+) RETURNS UUID LANGUAGE plpgsql SECURITY DEFINER SET search_path=public AS $$
+DECLARE
+  v_role TEXT; v_limit NUMERIC; v_per_farmer NUMERIC; v_remaining NUMERIC;
+  v_order UUID; v_take NUMERIC; v_total NUMERIC := 0; rec RECORD;
+BEGIN
+  SELECT role INTO v_role FROM profiles WHERE id=p_purchaser;
+  IF v_role NOT IN ('consumer','buyer') THEN RAISE EXCEPTION 'Only consumers and buyers may order'; END IF;
+  SELECT value_numeric INTO v_limit FROM platform_config WHERE key=CASE WHEN v_role='consumer' THEN 'consumer_order_limit_kg' ELSE 'buyer_order_limit_kg' END;
+  SELECT value_numeric INTO v_per_farmer FROM platform_config WHERE key='buyer_per_farmer_limit_kg';
+  IF p_quantity <= 0 OR p_quantity > v_limit THEN RAISE EXCEPTION 'Order quantity exceeds the % kg limit',v_limit; END IF;
+  INSERT INTO marketplace_orders(purchaser_id,crop_name,requested_quantity_kg)
+    VALUES(p_purchaser,trim(p_crop),p_quantity) RETURNING id INTO v_order;
+  v_remaining := p_quantity;
+  FOR rec IN
+    SELECT l.*, p.average_rating,
+      (p.average_rating*0.25) +
+      ((CASE l.quality WHEN 'Premium' THEN 5 WHEN 'Standard' THEN 3 ELSE 1 END)*0.20) +
+      (greatest(0,5-(CURRENT_DATE-l.harvest_date))*0.20) +
+      ((1/greatest(l.price_per_kg,1))*20*0.20) +
+      (least(l.available_quantity_kg,p_quantity)/p_quantity*5*0.15) AS match_score
+    FROM crop_listings l JOIN profiles p ON p.id=l.farmer_id
+    WHERE lower(l.crop_name)=lower(trim(p_crop)) AND l.status='available' AND l.available_quantity_kg>0
+      AND (p_quality IS NULL OR l.quality=p_quality)
+    ORDER BY match_score DESC, l.created_at FOR UPDATE OF l
+  LOOP
+    EXIT WHEN v_remaining <= 0;
+    v_take := least(rec.available_quantity_kg,v_remaining,CASE WHEN v_role='buyer' THEN v_per_farmer ELSE v_remaining END);
+    INSERT INTO order_items(order_id,listing_id,farmer_id,quantity_kg,price_per_kg)
+      VALUES(v_order,rec.id,rec.farmer_id,v_take,rec.price_per_kg);
+    UPDATE crop_listings SET available_quantity_kg=available_quantity_kg-v_take,
+      status=CASE WHEN available_quantity_kg-v_take=0 THEN 'unavailable' ELSE status END,updated_at=now() WHERE id=rec.id;
+    v_total := v_total + v_take*rec.price_per_kg; v_remaining := v_remaining-v_take;
+  END LOOP;
+  IF v_remaining > 0 THEN RAISE EXCEPTION 'Insufficient eligible stock'; END IF;
+  UPDATE marketplace_orders SET total_price=v_total WHERE id=v_order;
+  RETURN v_order;
+END $$;
+REVOKE ALL ON FUNCTION place_marketplace_order(UUID,TEXT,NUMERIC,TEXT) FROM PUBLIC,anon,authenticated;
+GRANT EXECUTE ON FUNCTION place_marketplace_order(UUID,TEXT,NUMERIC,TEXT) TO service_role;
+
+CREATE OR REPLACE FUNCTION maintain_marketplace_totals() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=public AS $$
+BEGIN
+  IF TG_TABLE_NAME='farmer_ratings' THEN
+    UPDATE profiles p SET average_rating=s.avg, total_ratings=s.cnt
+    FROM (SELECT round(avg(rating)::numeric,2) avg,count(*)::int cnt FROM farmer_ratings WHERE farmer_id=NEW.farmer_id) s
+    WHERE p.id=NEW.farmer_id;
+  ELSIF NEW.status='Rejected' AND OLD.status NOT IN ('Rejected','Cancelled','Completed') THEN
+    UPDATE crop_listings SET available_quantity_kg=available_quantity_kg+NEW.quantity_kg,status='available',updated_at=now()
+    WHERE id=NEW.listing_id;
+  ELSIF NEW.status='Completed' AND OLD.status<>'Completed' THEN
+    UPDATE profiles SET completed_transactions=completed_transactions+1 WHERE id=NEW.farmer_id;
+  END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS ratings_refresh_farmer ON farmer_ratings;
+CREATE TRIGGER ratings_refresh_farmer AFTER INSERT ON farmer_ratings FOR EACH ROW EXECUTE FUNCTION maintain_marketplace_totals();
+DROP TRIGGER IF EXISTS order_items_maintain_stock_totals ON order_items;
+CREATE TRIGGER order_items_maintain_stock_totals AFTER UPDATE OF status ON order_items FOR EACH ROW EXECUTE FUNCTION maintain_marketplace_totals();

@@ -9,6 +9,7 @@ import BuyerProfilePage from './BuyerProfilePage';
 import BuyerRequirementsPage from './BuyerRequirementsPage';
 import FarmerDashboard from './FarmerDashboard';
 import BuyerHome from './BuyerHome';
+import MarketplacePage from './MarketplacePage';
 import type { UserRole, Profile } from './lib/roleService';
 
 // ── API Types ─────────────────────────────────────────────────────────────────
@@ -176,7 +177,7 @@ function DistanceBadge({
   );
 }
 
-type View = 'home' | 'form' | 'results' | 'marketplace' | 'profile' | 'buyer-profile' | 'buyer-requirements';
+type View = 'home' | 'form' | 'results' | 'marketplace' | 'trade' | 'profile' | 'buyer-profile' | 'buyer-requirements';
 
 // ── Strategy card ─────────────────────────────────────────────────────────────
 
@@ -1323,6 +1324,7 @@ export default function App() {
             district: null,
             company_name: null,
             business_type: null,
+            public_id: null,
             created_at: new Date().toISOString(),
           });
           if (r !== 'farmer') setHasConsent(true);
@@ -1364,14 +1366,14 @@ export default function App() {
                   Planner
                 </button>
                 <button
-                  onClick={() => setView('marketplace')}
+                  onClick={() => setView('trade')}
                   className={`text-sm px-3 py-1.5 rounded-lg font-medium transition ${
                     view === 'marketplace'
                       ? 'bg-green-100 text-green-700'
                       : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'
                   }`}
                 >
-                  Marketplace
+                  Crop Market
                 </button>
                 <button
                   onClick={handleBackToHome}
@@ -1388,7 +1390,7 @@ export default function App() {
                 <span className={`text-xs px-2 py-0.5 rounded-full font-medium hidden sm:inline ${
                   role === 'farmer' ? 'bg-green-100 text-green-700' : 'bg-blue-100 text-blue-700'
                 }`}>
-                  {role === 'farmer' ? '🌾 Farmer' : '🏪 Buyer'}
+                  {role === 'farmer' ? '🌾 Farmer' : role === 'consumer' ? '🧺 Consumer' : '🏪 Buyer'}
                 </span>
               )}
               {role === 'farmer' && (
@@ -1454,19 +1456,23 @@ export default function App() {
             user={user}
             profile={profile}
             onStartPlanner={handleStart}
-            onGoToMarketplace={() => setView('marketplace')}
+            onGoToMarketplace={() => setView('trade')}
             onGoToProfile={() => setView('profile')}
           />
         )}
 
-        {view === 'home' && role === 'buyer' && profile && (
+        {view === 'home' && (role === 'buyer' || role === 'consumer') && profile && (
           <BuyerHome
             user={user}
             profile={profile}
-            onGoToMarketplace={() => setView('marketplace')}
+            onGoToMarketplace={() => setView('trade')}
             onGoToProfile={() => setView('buyer-profile')}
             onGoToRequirements={() => setView('buyer-requirements')}
           />
+        )}
+
+        {view === 'trade' && role && (
+          <MarketplacePage user={user} role={role} />
         )}
 
         {/* ── FORM VIEW ── */}
@@ -2114,7 +2120,7 @@ export default function App() {
         )}
 
         {/* ── BUYER PROFILE VIEW ── */}
-        {view === 'buyer-profile' && role === 'buyer' && profile && (
+        {view === 'buyer-profile' && (role === 'buyer' || role === 'consumer') && profile && (
           <BuyerProfilePage
             user={user}
             profile={profile}
