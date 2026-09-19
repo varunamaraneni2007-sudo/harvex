@@ -189,6 +189,14 @@ CREATE POLICY "farmer_consents: owner insert"
     ON farmer_consents FOR INSERT
     WITH CHECK (auth.uid() = user_id);
 
+-- RLS policies decide which rows may be accessed, but PostgreSQL table
+-- privileges are still required.  Keep anonymous users out, allow signed-in
+-- farmers through the owner policies above, and allow the backend service-role
+-- client to perform its consent lookup/insert without exposing that key.
+REVOKE ALL ON TABLE farmer_consents FROM anon;
+GRANT SELECT, INSERT ON TABLE farmer_consents TO authenticated;
+GRANT SELECT, INSERT ON TABLE farmer_consents TO service_role;
+
 -- ── [Step 28] Buyer-specific profile columns ─────────────────────────────────
 ALTER TABLE profiles ADD COLUMN IF NOT EXISTS company_name TEXT;
 ALTER TABLE profiles ADD COLUMN IF NOT EXISTS business_type TEXT;

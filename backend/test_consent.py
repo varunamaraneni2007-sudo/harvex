@@ -4,6 +4,7 @@ Step 23 — Farmer Privacy & Consent tests.
 All Supabase calls are mocked. No live credentials needed.
 """
 from unittest.mock import MagicMock, patch
+from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
@@ -138,3 +139,11 @@ def test_consent_record_includes_version():
     with patch("main._get_supabase", return_value=sb):
         resp = client.get("/api/consent", headers={"Authorization": "Bearer token"})
     assert resp.json().get("version") == CONSENT_VERSION
+
+
+def test_consent_schema_grants_backend_only_required_operations():
+    schema = Path(__file__).with_name("schema.sql").read_text()
+    assert "GRANT SELECT, INSERT ON TABLE farmer_consents TO service_role;" in schema
+    assert "GRANT SELECT, INSERT ON TABLE farmer_consents TO authenticated;" in schema
+    assert "REVOKE ALL ON TABLE farmer_consents FROM anon;" in schema
+    assert "GRANT ALL ON TABLE farmer_consents" not in schema

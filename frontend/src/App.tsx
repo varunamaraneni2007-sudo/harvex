@@ -980,60 +980,69 @@ export default function App() {
   const [role, setRole] = useState<UserRole | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [roleLoading, setRoleLoading] = useState(false);
+  const [profileLoadError, setProfileLoadError] = useState<string | null>(null);
   const [hasConsent, setHasConsent] = useState(false);
   const [consentLoading, setConsentLoading] = useState(false);
 
   useEffect(() => {
+    let profileRequestId = 0;
+
+    const loadProfile = async (accessToken: string) => {
+      const requestId = ++profileRequestId;
+      setRoleLoading(true);
+      setProfileLoadError(null);
+      setConsentLoading(false);
+      try {
+        const p = await fetchProfile(accessToken);
+        if (requestId !== profileRequestId) return;
+        const r = p?.role ?? null;
+        setRole(r);
+        setProfile(p);
+        setHasConsent(r !== 'farmer');
+        if (r === 'farmer') {
+          setConsentLoading(true);
+          const c = await fetchConsent(accessToken).catch(() => null);
+          if (requestId !== profileRequestId) return;
+          setHasConsent(c !== null);
+          setConsentLoading(false);
+        }
+      } catch (error) {
+        if (requestId !== profileRequestId) return;
+        setProfileLoadError(
+          error instanceof Error ? error.message : 'Failed to load your profile.',
+        );
+      } finally {
+        if (requestId === profileRequestId) {
+          setRoleLoading(false);
+          setAuthLoading(false);
+        }
+      }
+    };
+
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       const nextUser = session?.user ?? null;
       setUser(nextUser);
-      if (event === 'INITIAL_SESSION') {
-        if (nextUser) {
-          // Pass the token from the callback directly so we never call
-          // getSession() while Supabase's internal state is still settling.
-          const token = session?.access_token;
-          setRoleLoading(true);
-          fetchProfile(token)
-            .then(async (p) => {
-              const r = p?.role ?? null;
-              setRole(r);
-              setProfile(p);
-              if (r === 'farmer') {
-                setConsentLoading(true);
-                const c = await fetchConsent(token).catch(() => null);
-                setHasConsent(c !== null);
-                setConsentLoading(false);
-              }
-            })
-            .catch(() => { setRole(null); setProfile(null); })
-            .finally(() => { setRoleLoading(false); setAuthLoading(false); });
+      if (event === 'INITIAL_SESSION' || event === 'SIGNED_IN') {
+        if (nextUser && session?.access_token) {
+          // Use the callback token and ignore stale overlapping auth requests.
+          void loadProfile(session.access_token);
         } else {
+          profileRequestId += 1;
           setRole(null);
           setProfile(null);
           setHasConsent(false);
+          setConsentLoading(false);
+          setProfileLoadError(null);
           setAuthLoading(false);
         }
-      } else if (event === 'SIGNED_IN') {
-        const token = session?.access_token;
-        setRoleLoading(true);
-        fetchProfile(token)
-          .then(async (p) => {
-            const r = p?.role ?? null;
-            setRole(r);
-            setProfile(p);
-            if (r === 'farmer') {
-              setConsentLoading(true);
-              const c = await fetchConsent(token).catch(() => null);
-              setHasConsent(c !== null);
-              setConsentLoading(false);
-            }
-          })
-          .catch(() => { setRole(null); setProfile(null); })
-          .finally(() => setRoleLoading(false));
       } else if (event === 'SIGNED_OUT') {
+        profileRequestId += 1;
         setRole(null);
         setProfile(null);
         setHasConsent(false);
+        setConsentLoading(false);
+        setProfileLoadError(null);
+        setAuthLoading(false);
       }
     });
     // Fallback: if INITIAL_SESSION never fires (e.g. client throws), clear loading
@@ -1339,6 +1348,23 @@ export default function App() {
 
   if (!user) {
     return <AuthPage mode={authMode} onModeChange={setAuthMode} />;
+  }
+
+  if (profileLoadError) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-b from-green-50/60 via-white to-white px-4">
+        <div className="w-full max-w-md text-center bg-white border border-red-100 rounded-2xl p-6 shadow-sm">
+          <h1 className="text-lg font-semibold text-gray-900">We couldn't load your profile</h1>
+          <p className="mt-2 text-sm text-gray-600">{profileLoadError}</p>
+          <button
+            onClick={() => window.location.reload()}
+            className="mt-5 px-5 py-2.5 rounded-xl bg-green-600 text-white text-sm font-semibold hover:bg-green-700 transition"
+          >
+            Try again
+          </button>
+        </div>
+      </div>
+    );
   }
 
   const displayName =

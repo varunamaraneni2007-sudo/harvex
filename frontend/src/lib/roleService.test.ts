@@ -19,7 +19,7 @@ vi.mock('./supabaseClient', () => ({
   },
 }));
 
-import { createProfile, fetchProfile, updateProfile } from './roleService';
+import { createProfile, fetchProfile, selectRole, updateProfile } from './roleService';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -272,6 +272,55 @@ describe('fetchProfile with accessToken — existing-user routing', () => {
     expect(url).toBe('/api/profile');
     expect(opts.headers['Authorization']).toBe('Bearer token-from-callback');
     expect(mockGetSession).not.toHaveBeenCalled();
+  });
+});
+
+describe('selectRole — stale role-selection recovery', () => {
+  it('routes an existing user to the stored role after a create conflict', async () => {
+    withSession();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn()
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 409,
+          json: () => Promise.resolve({ detail: 'Profile already exists. Role cannot be changed.' }),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve(BUYER_PROFILE),
+        }),
+    );
+
+    const profile = await selectRole('farmer', 'Existing Buyer');
+
+    expect(profile.role).toBe('buyer');
+    expect(globalThis.fetch).toHaveBeenNthCalledWith(2, '/api/profile', {
+      headers: { Authorization: `Bearer ${FAKE_TOKEN}` },
+    });
+  });
+
+  it('still surfaces a conflict if the existing profile cannot be loaded', async () => {
+    withSession();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn()
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 409,
+          json: () => Promise.resolve({ detail: 'Profile already exists. Role cannot be changed.' }),
+        })
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 404,
+          json: () => Promise.resolve({}),
+        }),
+    );
+
+    await expect(selectRole('farmer', 'Existing User')).rejects.toThrow(
+      'Profile already exists. Role cannot be changed.',
+    );
   });
 });
 

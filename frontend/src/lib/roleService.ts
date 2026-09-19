@@ -23,6 +23,13 @@ export interface ProfileUpdate {
   business_type?: string | null;
 }
 
+export class ProfileAlreadyExistsError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ProfileAlreadyExistsError';
+  }
+}
+
 /**
  * Fetch the authenticated user's profile from the backend.
  * Returns null when no profile exists yet (first login after registration).
@@ -70,6 +77,22 @@ export async function updateProfile(updates: ProfileUpdate): Promise<Profile> {
 }
 
 /**
+ * Create a profile for a new user. If an existing user reaches role selection
+ * because of stale UI/session timing, preserve the stored role and return that
+ * profile instead of attempting to change it.
+ */
+export async function selectRole(role: UserRole, fullName?: string): Promise<Profile> {
+  try {
+    return await createProfile(role, fullName);
+  } catch (error) {
+    if (!(error instanceof ProfileAlreadyExistsError)) throw error;
+    const existing = await fetchProfile();
+    if (existing) return existing;
+    throw error;
+  }
+}
+
+/**
  * Create the user's profile with the chosen role.
  * Throws if the profile already exists or the server returns an error.
  */
@@ -87,7 +110,9 @@ export async function createProfile(role: UserRole, fullName?: string): Promise<
   });
   if (!resp.ok) {
     const body = await resp.json().catch(() => ({}));
-    throw new Error((body as { detail?: string }).detail ?? `HTTP ${resp.status}`);
+    const message = (body as { detail?: string }).detail ?? `HTTP ${resp.status}`;
+    if (resp.status === 409) throw new ProfileAlreadyExistsError(message);
+    throw new Error(message);
   }
   return resp.json() as Promise<Profile>;
 }
