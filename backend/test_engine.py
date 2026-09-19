@@ -203,3 +203,79 @@ def test_hackathon_demo_onion_400kg():
     assert len(strategy.allocations) >= 1
     # Multi-channel should split across at least 2 markets for 400 kg
     assert len(strategy.allocations) >= 2
+
+
+# ── Quality eligibility filter ────────────────────────────────────────────────
+
+def test_low_quality_not_allocated_to_standard_only_markets():
+    """Low quality produce must not appear in Standard-only markets."""
+    from fastapi.testclient import TestClient
+    from main import app
+    client = TestClient(app)
+    resp = client.post("/api/decision/optimize", json={
+        "crop": "wheat", "quantity_kg": 500, "quality": "Low",
+        "farmer_location": "Vijayawada", "harvest_date": "2026-09-19", "shelf_life_days": 10,
+    })
+    assert resp.status_code == 200
+    allocations = resp.json()["recommended"]["allocations"]
+    standard_only = {"Hyderabad Metro Market", "FreshLink Retail Aggregator"}
+    used = {a["market_name"] for a in allocations}
+    assert not used.intersection(standard_only), (
+        f"Low quality produce must not go to Standard-only markets; got {used}"
+    )
+
+
+def test_standard_quality_can_access_standard_only_markets():
+    """Standard quality produce is eligible for Standard-min markets."""
+    from fastapi.testclient import TestClient
+    from main import app
+    client = TestClient(app)
+    resp = client.post("/api/decision/optimize", json={
+        "crop": "onion", "quantity_kg": 400, "quality": "Standard",
+        "farmer_location": "Vijayawada", "harvest_date": "2026-09-19", "shelf_life_days": 5,
+    })
+    assert resp.status_code == 200
+    allocations = resp.json()["recommended"]["allocations"]
+    # Standard quality can reach any market; result must be non-empty
+    assert len(allocations) >= 1
+
+
+def test_low_quality_plans_exclude_standard_only_markets():
+    """Plan A / B / C must not route Low quality to Standard-only markets."""
+    from fastapi.testclient import TestClient
+    from main import app
+    client = TestClient(app)
+    resp = client.post("/api/decision/plans", json={
+        "crop": "rice", "quantity_kg": 300, "quality": "Low",
+        "farmer_location": "Guntur", "harvest_date": "2026-09-19", "shelf_life_days": 14,
+    })
+    assert resp.status_code == 200
+    standard_only = {"Hyderabad Metro Market", "FreshLink Retail Aggregator"}
+    for label in ("plan_a", "plan_b", "plan_c"):
+        used = {a["market_name"] for a in resp.json()[label]["allocations"]}
+        assert not used.intersection(standard_only), (
+            f"{label}: Low quality must not go to Standard-only markets; got {used}"
+        )
+
+
+def test_whatif_low_quality_excludes_standard_only_markets():
+    """What-If current plan must not route Low quality to Standard-only markets."""
+    from fastapi.testclient import TestClient
+    from main import app
+    client = TestClient(app)
+    resp = client.post("/api/decision/whatif", json={
+        "produce": {
+            "crop": "wheat", "quantity_kg": 200, "quality": "Low",
+            "farmer_location": "Vijayawada", "harvest_date": "2026-09-19", "shelf_life_days": 10,
+        },
+        "scenario": {"transport_cost_increase_pct": 0, "price_decrease_pct": 0,
+                     "shelf_life_reduction_days": 0, "cancelled_market": None,
+                     "capacity_reduction_pct": 0},
+    })
+    assert resp.status_code == 200
+    standard_only = {"Hyderabad Metro Market", "FreshLink Retail Aggregator"}
+    for plan_key in ("current_plan", "whatif_plan"):
+        used = {a["market_name"] for a in resp.json()[plan_key]["allocations"]}
+        assert not used.intersection(standard_only), (
+            f"{plan_key}: Low quality must not go to Standard-only markets; got {used}"
+        )

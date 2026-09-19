@@ -294,6 +294,15 @@ def _effective_spoilage_pct(base_pct: float, shelf_life_days: int) -> float:
     return base_pct
 
 
+def _eligible_markets(markets: List[dict], quality: str) -> List[dict]:
+    """Return only markets whose min_quality the farmer's produce meets."""
+    farmer_rank = QUALITY_ORDER.get(quality, 1)
+    return [
+        m for m in markets
+        if QUALITY_ORDER.get(m.get("min_quality", "Low"), 0) <= farmer_rank
+    ]
+
+
 def _true_net_per_kg(market: dict, quality_mult: float, shelf_life_days: int) -> float:
     """Net value per kg using the unweighted true formula."""
     price = market["base_price_per_kg"] * quality_mult
@@ -433,6 +442,7 @@ def _allocation_signature(strategy: AllocationStrategy) -> frozenset:
 def _run_optimize(data: ProduceInput, markets: List[dict]) -> OptimizeResponse:
     """Core optimizer; accepts any markets list (real-distance or static)."""
     quality_mult = QUALITY_MULTIPLIER.get(data.quality, 1.0)
+    markets = _eligible_markets(markets, data.quality)
 
     strategies: List[AllocationStrategy] = []
     seen_signatures: set = set()
@@ -635,12 +645,13 @@ def whatif(req: WhatIfRequest) -> WhatIfResponse:
     scenario = req.scenario
     quality_mult = QUALITY_MULTIPLIER.get(data.quality, 1.0)
 
-    # Current plan — greedy on original MARKETS
-    current_raw = _greedy_allocate(data.quantity_kg, MARKETS, quality_mult, data.shelf_life_days)
-    current_plan = _plan_from_allocations(MARKETS, current_raw, quality_mult, data.shelf_life_days)
+    # Current plan — greedy on original MARKETS (filtered by quality)
+    eligible = _eligible_markets(MARKETS, data.quality)
+    current_raw = _greedy_allocate(data.quantity_kg, eligible, quality_mult, data.shelf_life_days)
+    current_plan = _plan_from_allocations(eligible, current_raw, quality_mult, data.shelf_life_days)
 
-    # What-if plan — greedy on modified markets / shelf life
-    modified_markets, effective_shelf = _apply_scenario(MARKETS, data, scenario)
+    # What-if plan — greedy on modified markets / shelf life (also quality-filtered)
+    modified_markets, effective_shelf = _apply_scenario(eligible, data, scenario)
     if modified_markets:
         whatif_raw = _greedy_allocate(data.quantity_kg, modified_markets, quality_mult, effective_shelf)
         whatif_plan = _plan_from_allocations(modified_markets, whatif_raw, quality_mult, effective_shelf)
@@ -785,6 +796,7 @@ def _build_plan_result(
 def _run_plans(data: ProduceInput, markets: List[dict]) -> PlansResponse:
     """Core plan generator; accepts any markets list (real-distance or static)."""
     quality_mult = QUALITY_MULTIPLIER.get(data.quality, 1.0)
+    markets = _eligible_markets(markets, data.quality)
 
     raw_a = _greedy_allocate(data.quantity_kg, markets, quality_mult, data.shelf_life_days)
     raw_b = _plan_b_allocate(data.quantity_kg, markets, quality_mult, data.shelf_life_days)
@@ -941,6 +953,142 @@ def distances(farmer_location: str = Query(..., description="Farmer's location")
         }
         for m in enriched
     ]
+
+
+# ── /api/markets — Real APMC market discovery (AGMARKNET) ────────────────────
+
+@app.get("/api/markets/discover")
+def markets_discover(
+    state: Optional[str] = Query(None, description="Filter by state name"),
+    district: Optional[str] = Query(None, description="Filter by district name"),
+    q: Optional[str] = Query(None, description="Free-text search (name / district / state)"),
+    commodity: Optional[str] = Query(None, description="Filter by commodity/crop"),
+    limit: int = Query(50, ge=1, le=200, description="Max results to return"),
+):
+    """
+    Discover real Indian APMC markets from the AGMARKNET seed database.
+    Returns market identity and location — no pricing (Step 19 adds live prices).
+    Source: Agricultural Marketing Information Network (AGMARKNET / data.gov.in).
+    """
+    from market_repository import get_repository
+    repo = get_repository()
+    markets = repo.search(state=state, district=district, q=q, commodity=commodity, limit=limit)
+    return {
+        "markets": [m.model_dump() for m in markets],
+        "total": len(markets),
+        "source": "AGMARKNET/data.gov.in",
+        "note": "Pricing data will be added in Step 19 (live AGMARKNET price integration).",
+    }
+
+
+@app.get("/api/markets/states")
+def markets_states():
+    """Return all unique Indian states present in the market database."""
+    from market_repository import get_repository
+    return {"states": get_repository().all_states()}
+
+
+@app.get("/api/markets/districts")
+def markets_districts(state: str = Query(..., description="State name")):
+    """Return all districts in the given state that have known APMC markets."""
+    from market_repository import get_repository
+    return {"state": state, "districts": get_repository().districts_in_state(state)}
+
+
+# ── /api/market-prices ───────────────────────────────────────────────────────
+
+@app.get("/api/market-prices")
+def market_prices(
+    commodity: Optional[str] = Query(None),
+    state: Optional[str] = Query(None),
+    district: Optional[str] = Query(None),
+    market: Optional[str] = Query(None),
+    latest: bool = Query(True),
+    limit: int = Query(50, ge=1, le=500),
+):
+    """
+    Return current wholesale (mandi) prices from the local AGMARKNET cache.
+    Prices are in ₹/kg (converted from the ₹/quintal values in AGMARKNET).
+    The cache is populated by the /api/market-prices/refresh endpoint or the
+    refresh_price_cache() CLI helper.  If the cache is absent the response
+    returns an empty list with api_configured=False.
+    """
+    from price_service import get_price_repository
+    repo = get_price_repository()
+    prices = repo.search(
+        commodity=commodity,
+        state=state,
+        district=district,
+        market=market,
+        latest=latest,
+        limit=limit,
+    )
+    configured = bool(os.getenv("AGMARKNET_API_KEY", ""))
+    return {
+        "prices": [p.model_dump() for p in prices],
+        "total": len(prices),
+        "source": "AGMARKNET/data.gov.in",
+        "unit": "₹/kg (converted from ₹/quintal)",
+        "price_type": "wholesale mandi price",
+        "cache_age_hours": repo.cache_age_hours(),
+        "api_configured": configured,
+        "note": (
+            "Populate this cache with: "
+            "AGMARKNET_API_KEY=<key> python -c "
+            "'from price_service import refresh_price_cache; refresh_price_cache()'"
+        ) if not prices else None,
+    }
+
+
+@app.post("/api/market-prices/refresh")
+def market_prices_refresh():
+    """
+    Trigger a live fetch from AGMARKNET and refresh the local price cache.
+    Requires AGMARKNET_API_KEY to be set in the environment.
+    """
+    from price_service import refresh_price_cache, get_price_repository
+    import price_service as _ps
+    key = os.getenv("AGMARKNET_API_KEY", "")
+    if not key:
+        return {
+            "success": False,
+            "message": "AGMARKNET_API_KEY is not configured",
+            "records": 0,
+        }
+    count = refresh_price_cache(api_key=key, verbose=False)
+    # Reset singleton so next call loads fresh cache
+    _ps._price_repo = None
+    return {"success": True, "records": count, "message": f"Cache refreshed: {count} records"}
+
+
+# ── /api/places — Google Places proxy (key never reaches browser) ─────────────
+
+@app.get("/api/places/autocomplete")
+def places_autocomplete(
+    input: str = Query(..., description="User search text"),
+    session_token: str = Query(default="", description="Billing session token"),
+):
+    """
+    Proxy to Google Places Autocomplete (New) API.  The Google API key stays
+    on the server; the browser never sees it.  Returns suggestions plus a
+    maps_configured flag so the frontend can degrade to free-text gracefully.
+    """
+    from maps_service import autocomplete_places
+    key_present = bool(os.getenv("GOOGLE_MAPS_API_KEY", ""))
+    suggestions = autocomplete_places(input, session_token)
+    return {"suggestions": suggestions, "maps_configured": key_present}
+
+
+@app.get("/api/places/details")
+def places_details(place_id: str = Query(..., description="Google Place ID")):
+    """
+    Proxy to Google Place Details (New) API.  Returns the canonical address,
+    place ID, and lat/lng for the selected place, or place: null on failure.
+    """
+    from maps_service import get_place_details
+    key_present = bool(os.getenv("GOOGLE_MAPS_API_KEY", ""))
+    details = get_place_details(place_id)
+    return {"place": details, "maps_configured": key_present}
 
 
 # ── /api/marketplace ──────────────────────────────────────────────────────────

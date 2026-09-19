@@ -1,8 +1,9 @@
 """
-Google Routes API integration (v2 — replaces the legacy Distance Matrix API).
+Google Routes API integration (v2) and Places API (New) integration.
 
 Provides real road distances and travel times between the farmer's location
-and each market.  Falls back gracefully when the API key is missing or the
+and each market, plus Places Autocomplete and Place Details for structured
+location selection.  Falls back gracefully when the API key is missing or the
 call fails — the decision engine always has a usable transport cost.
 """
 import os
@@ -19,6 +20,9 @@ LOCAL_BASE_COST_PER_KG = 0.50   # ₹/kg base loading/handling cost
 KM_RATE_PER_KG = 0.0105         # ₹/kg/km truck freight rate
 
 ROUTES_URL = "https://routes.googleapis.com/directions/v2:computeRoutes"
+PLACES_AUTOCOMPLETE_URL = "https://places.googleapis.com/v1/places:autocomplete"
+PLACES_DETAILS_BASE_URL = "https://places.googleapis.com/v1/places"
+PLACES_DETAILS_FIELDS = "id,displayName,formattedAddress,location"
 
 # In-process cache: (origin_lower, destination_lower) → (distance_km, travel_time_minutes)
 DISTANCE_CACHE: dict = {}
@@ -111,3 +115,85 @@ def enrich_markets_with_distances(farmer_location: str, markets: List[dict]) -> 
         else:
             result.append({**m, "distance_km": None, "travel_time_minutes": None})
     return result
+
+
+# ── Places API (New) ──────────────────────────────────────────────────────────
+
+def autocomplete_places(input_text: str, session_token: str = "") -> List[dict]:
+    """
+    Call the Google Places Autocomplete (New) API.
+
+    Returns a list of suggestion dicts with keys:
+      place_id, description, main_text, secondary_text.
+    Returns [] when the API key is absent, the input is too short, or the
+    call fails — callers must handle an empty result gracefully.
+    """
+    if not _get_api_key() or not input_text.strip():
+        return []
+    try:
+        body: dict = {
+            "input": input_text.strip(),
+            "regionCode": "IN",   # bias toward India
+        }
+        if session_token:
+            body["sessionToken"] = session_token
+        resp = httpx.post(
+            PLACES_AUTOCOMPLETE_URL,
+            headers={
+                "X-Goog-Api-Key": _get_api_key(),
+                "Content-Type": "application/json",
+            },
+            json=body,
+            timeout=5.0,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        suggestions = []
+        for s in data.get("suggestions", []):
+            pred = s.get("placePrediction", {})
+            if not pred:
+                continue
+            structured = pred.get("structuredFormat", {})
+            suggestions.append({
+                "place_id": pred.get("placeId", ""),
+                "description": pred.get("text", {}).get("text", ""),
+                "main_text": structured.get("mainText", {}).get("text", ""),
+                "secondary_text": structured.get("secondaryText", {}).get("text", ""),
+            })
+        return suggestions
+    except Exception:
+        return []
+
+
+def get_place_details(place_id: str) -> Optional[dict]:
+    """
+    Call the Google Place Details (New) API for a single place.
+
+    Returns a dict with keys: place_id, name, formatted_address, lat, lng.
+    Returns None when the API key is absent, place_id is empty, or the
+    call fails.
+    """
+    if not _get_api_key() or not place_id.strip():
+        return None
+    try:
+        url = f"{PLACES_DETAILS_BASE_URL}/{place_id.strip()}"
+        resp = httpx.get(
+            url,
+            headers={
+                "X-Goog-Api-Key": _get_api_key(),
+                "X-Goog-FieldMask": PLACES_DETAILS_FIELDS,
+            },
+            timeout=5.0,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        loc = data.get("location", {})
+        return {
+            "place_id": data.get("id", place_id),
+            "name": data.get("displayName", {}).get("text", ""),
+            "formatted_address": data.get("formattedAddress", ""),
+            "lat": loc.get("latitude"),
+            "lng": loc.get("longitude"),
+        }
+    except Exception:
+        return None
