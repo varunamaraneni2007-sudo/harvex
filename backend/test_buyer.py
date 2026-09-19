@@ -326,6 +326,50 @@ class TestBuyerRequirementsCreate:
         assert resp.status_code == 422
         assert "budget" in resp.json()["detail"].lower()
 
+    def test_create_rejects_invalid_date(self):
+        sb = _mock_buyer_sb()
+        sb.table.return_value.select.return_value.eq.return_value.execute.return_value = MagicMock(data=[{"role": "buyer"}])
+        with patch("main._get_supabase", return_value=sb):
+            resp = client.post(
+                "/api/buyer/requirements",
+                json={"crop": "Tomato", "quantity_kg": 100, "quality": "Standard", "needed_by": "not-a-date"},
+                headers={"Authorization": BUYER_AUTH},
+            )
+        assert resp.status_code == 422
+        assert "needed_by" in resp.json()["detail"].lower()
+
+    def test_create_rejects_past_date(self):
+        sb = _mock_buyer_sb()
+        sb.table.return_value.select.return_value.eq.return_value.execute.return_value = MagicMock(data=[{"role": "buyer"}])
+        with patch("main._get_supabase", return_value=sb):
+            resp = client.post(
+                "/api/buyer/requirements",
+                json={"crop": "Tomato", "quantity_kg": 100, "quality": "Standard", "needed_by": "2020-01-01"},
+                headers={"Authorization": BUYER_AUTH},
+            )
+        assert resp.status_code == 422
+        assert "past" in resp.json()["detail"].lower()
+
+    def test_create_accepts_future_date(self):
+        created = {
+            "id": REQ_ID, "user_id": BUYER_USER_ID,
+            "crop": "Tomato", "quantity_kg": 100, "quality": "Standard",
+            "delivery_state": None, "delivery_district": None,
+            "budget_per_kg": None, "needed_by": "2099-12-31", "notes": None,
+            "is_active": True, "created_at": "2026-09-01T00:00:00Z",
+        }
+        sb = _mock_buyer_sb()
+        sb.table.return_value.select.return_value.eq.return_value.execute.return_value = MagicMock(data=[{"role": "buyer"}])
+        sb.table.return_value.insert.return_value.execute.return_value = MagicMock(data=[created])
+        with patch("main._get_supabase", return_value=sb):
+            resp = client.post(
+                "/api/buyer/requirements",
+                json={"crop": "Tomato", "quantity_kg": 100, "quality": "Standard", "needed_by": "2099-12-31"},
+                headers={"Authorization": BUYER_AUTH},
+            )
+        assert resp.status_code == 201
+        assert resp.json()["needed_by"] == "2099-12-31"
+
     def test_create_accepts_any_quality(self):
         created = {
             "id": REQ_ID, "user_id": BUYER_USER_ID,

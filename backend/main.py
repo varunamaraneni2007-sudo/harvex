@@ -383,6 +383,35 @@ _REQUIREMENT_FIELDS = (
 _VALID_QUALITIES = {"Premium", "Standard", "Low", "Any"}
 
 
+def _validate_needed_by(needed_by: Optional[str]) -> Optional[str]:
+    """
+    Validate and normalise a needed_by date string.
+    - Must parse as YYYY-MM-DD.
+    - Must not be in the past (compared to today's date in UTC).
+    Returns the normalised date string, or raises HTTPException 422.
+    Returns None when the input is None or blank (field is optional).
+    """
+    from datetime import date as _date
+    if needed_by is None:
+        return None
+    val = needed_by.strip()
+    if not val:
+        return None
+    try:
+        parsed = _date.fromisoformat(val)
+    except ValueError:
+        raise HTTPException(
+            status_code=422,
+            detail="needed_by must be a valid date in YYYY-MM-DD format.",
+        )
+    if parsed < _date.today():
+        raise HTTPException(
+            status_code=422,
+            detail="needed_by cannot be in the past.",
+        )
+    return val
+
+
 def _require_buyer(uid: str, sb) -> None:
     """Raise 403 if the authenticated user is not a buyer."""
     resp = sb.table("profiles").select("role").eq("id", uid).execute()
@@ -473,8 +502,9 @@ def create_buyer_requirement(
             row["delivery_district"] = payload.delivery_district.strip() or None
         if payload.budget_per_kg is not None:
             row["budget_per_kg"] = payload.budget_per_kg
-        if payload.needed_by is not None:
-            row["needed_by"] = payload.needed_by.strip() or None
+        needed_by_val = _validate_needed_by(payload.needed_by)
+        if needed_by_val is not None:
+            row["needed_by"] = needed_by_val
         if payload.notes is not None:
             row["notes"] = payload.notes.strip() or None
         resp = sb.table("buyer_requirements").insert(row).execute()
@@ -530,7 +560,7 @@ def update_buyer_requirement(
                 raise HTTPException(status_code=422, detail="budget_per_kg must be greater than 0.")
             updates["budget_per_kg"] = payload.budget_per_kg
         if payload.needed_by is not None:
-            updates["needed_by"] = payload.needed_by.strip() or None
+            updates["needed_by"] = _validate_needed_by(payload.needed_by)
         if payload.notes is not None:
             updates["notes"] = payload.notes.strip() or None
         if payload.is_active is not None:
