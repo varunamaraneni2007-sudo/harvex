@@ -1,4 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
+import type { User } from '@supabase/supabase-js';
+import { supabase } from './lib/supabaseClient';
+import AuthPage from './AuthPage';
 
 // ── API Types ─────────────────────────────────────────────────────────────────
 
@@ -960,6 +963,28 @@ function CropSelector({ value, onChange }: { value: string; onChange: (v: string
 // ── Main App ──────────────────────────────────────────────────────────────────
 
 export default function App() {
+  // ── Auth state ──────────────────────────────────────────────────────────────
+  const [user, setUser] = useState<User | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
+
+  useEffect(() => {
+    // Restore session from storage and subscribe to auth changes
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setUser(session?.user ?? null);
+      setAuthLoading(false);
+    });
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null);
+    });
+    return () => subscription.unsubscribe();
+  }, []);
+
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
+    setView('home');
+  };
+
   const [view, setView] = useState<View>('home');
 
   // Form state
@@ -1225,6 +1250,28 @@ export default function App() {
   const filterInputCls =
     'w-full px-3 py-2.5 text-sm rounded-xl border border-gray-200 focus:ring-2 focus:ring-green-500 focus:border-green-500 outline-none transition bg-white placeholder:text-gray-300';
 
+  // ── Auth gating ────────────────────────────────────────────────────────────
+  if (authLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-b from-green-50/60 via-white to-white">
+        <div className="flex flex-col items-center gap-4">
+          <span className="text-3xl">🌱</span>
+          <span className="inline-block w-6 h-6 border-2 border-green-500 border-t-transparent rounded-full animate-spin" />
+          <p className="text-sm text-gray-400">Loading…</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return <AuthPage mode={authMode} onModeChange={setAuthMode} />;
+  }
+
+  const displayName =
+    (user.user_metadata?.full_name as string | undefined) ||
+    user.email?.split('@')[0] ||
+    'Farmer';
+
   return (
     <div className="min-h-screen bg-gradient-to-b from-green-50/60 via-white to-white text-gray-800 flex flex-col">
 
@@ -1275,6 +1322,20 @@ export default function App() {
                 Hackathon Prototype
               </span>
             )}
+
+            {/* User info + logout */}
+            <div className="flex items-center gap-2 ml-2 border-l border-gray-100 pl-3">
+              <span className="text-xs text-gray-500 hidden sm:inline truncate max-w-[140px]" title={user.email}>
+                {displayName}
+              </span>
+              <button
+                onClick={handleLogout}
+                className="text-xs px-2.5 py-1.5 rounded-lg font-medium text-gray-500 hover:text-red-600 hover:bg-red-50 transition"
+                title="Sign out"
+              >
+                Sign out
+              </button>
+            </div>
           </nav>
         </div>
       </header>
