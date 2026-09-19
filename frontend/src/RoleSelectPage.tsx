@@ -18,7 +18,7 @@ export default function RoleSelectPage({ fullName, onRoleSelected }: RoleSelectP
     setError(null);
     try {
       const p = await selectRole(selected, fullName ?? undefined);
-      onRoleSelected(p.role, p);
+      onRoleSelected(selected, p ?? undefined);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Something went wrong. Please try again.');
     } finally {

@@ -77,18 +77,15 @@ export async function updateProfile(updates: ProfileUpdate): Promise<Profile> {
 }
 
 /**
- * Create a profile for a new user. If an existing user reaches role selection
- * because of stale UI/session timing, preserve the stored role and return that
- * profile instead of attempting to change it.
+ * Create a profile for a new user. Existing users may continue with their
+ * session-selected role without a blocking GET /api/profile request.
  */
-export async function selectRole(role: UserRole, fullName?: string): Promise<Profile> {
+export async function selectRole(role: UserRole, fullName?: string): Promise<Profile | null> {
   try {
     return await createProfile(role, fullName);
   } catch (error) {
     if (!(error instanceof ProfileAlreadyExistsError)) throw error;
-    const existing = await fetchProfile();
-    if (existing) return existing;
-    throw error;
+    return null;
   }
 }
 

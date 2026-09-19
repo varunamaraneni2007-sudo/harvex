@@ -10,8 +10,6 @@ import BuyerRequirementsPage from './BuyerRequirementsPage';
 import FarmerDashboard from './FarmerDashboard';
 import BuyerHome from './BuyerHome';
 import type { UserRole, Profile } from './lib/roleService';
-import { fetchProfile } from './lib/roleService';
-import { fetchConsent } from './lib/consentService';
 
 // ── API Types ─────────────────────────────────────────────────────────────────
 
@@ -979,69 +977,23 @@ export default function App() {
   const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
   const [role, setRole] = useState<UserRole | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
-  const [roleLoading, setRoleLoading] = useState(false);
-  const [profileLoadError, setProfileLoadError] = useState<string | null>(null);
   const [hasConsent, setHasConsent] = useState(false);
-  const [consentLoading, setConsentLoading] = useState(false);
 
   useEffect(() => {
-    let profileRequestId = 0;
-
-    const loadProfile = async (accessToken: string) => {
-      const requestId = ++profileRequestId;
-      setRoleLoading(true);
-      setProfileLoadError(null);
-      setConsentLoading(false);
-      try {
-        const p = await fetchProfile(accessToken);
-        if (requestId !== profileRequestId) return;
-        const r = p?.role ?? null;
-        setRole(r);
-        setProfile(p);
-        setHasConsent(r !== 'farmer');
-        if (r === 'farmer') {
-          setConsentLoading(true);
-          const c = await fetchConsent(accessToken).catch(() => null);
-          if (requestId !== profileRequestId) return;
-          setHasConsent(c !== null);
-          setConsentLoading(false);
-        }
-      } catch (error) {
-        if (requestId !== profileRequestId) return;
-        setProfileLoadError(
-          error instanceof Error ? error.message : 'Failed to load your profile.',
-        );
-      } finally {
-        if (requestId === profileRequestId) {
-          setRoleLoading(false);
-          setAuthLoading(false);
-        }
-      }
-    };
-
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       const nextUser = session?.user ?? null;
       setUser(nextUser);
       if (event === 'INITIAL_SESSION' || event === 'SIGNED_IN') {
-        if (nextUser && session?.access_token) {
-          // Use the callback token and ignore stale overlapping auth requests.
-          void loadProfile(session.access_token);
-        } else {
-          profileRequestId += 1;
-          setRole(null);
-          setProfile(null);
-          setHasConsent(false);
-          setConsentLoading(false);
-          setProfileLoadError(null);
-          setAuthLoading(false);
-        }
-      } else if (event === 'SIGNED_OUT') {
-        profileRequestId += 1;
+        // Authentication is the only login requirement. Role selection is
+        // deliberately session-local until profile loading is restored.
         setRole(null);
         setProfile(null);
         setHasConsent(false);
-        setConsentLoading(false);
-        setProfileLoadError(null);
+        setAuthLoading(false);
+      } else if (event === 'SIGNED_OUT') {
+        setRole(null);
+        setProfile(null);
+        setHasConsent(false);
         setAuthLoading(false);
       }
     });
@@ -1334,7 +1286,7 @@ export default function App() {
     'w-full px-3 py-2.5 text-sm rounded-xl border border-gray-200 focus:ring-2 focus:ring-green-500 focus:border-green-500 outline-none transition bg-white placeholder:text-gray-300';
 
   // ── Auth gating ────────────────────────────────────────────────────────────
-  if (authLoading || roleLoading || consentLoading) {
+  if (authLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gradient-to-b from-green-50/60 via-white to-white">
         <div className="flex flex-col items-center gap-4">
@@ -1350,23 +1302,6 @@ export default function App() {
     return <AuthPage mode={authMode} onModeChange={setAuthMode} />;
   }
 
-  if (profileLoadError) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-gradient-to-b from-green-50/60 via-white to-white px-4">
-        <div className="w-full max-w-md text-center bg-white border border-red-100 rounded-2xl p-6 shadow-sm">
-          <h1 className="text-lg font-semibold text-gray-900">We couldn't load your profile</h1>
-          <p className="mt-2 text-sm text-gray-600">{profileLoadError}</p>
-          <button
-            onClick={() => window.location.reload()}
-            className="mt-5 px-5 py-2.5 rounded-xl bg-green-600 text-white text-sm font-semibold hover:bg-green-700 transition"
-          >
-            Try again
-          </button>
-        </div>
-      </div>
-    );
-  }
-
   const displayName =
     (user.user_metadata?.full_name as string | undefined) ||
     user.email?.split('@')[0] ||
@@ -1379,7 +1314,17 @@ export default function App() {
         fullName={(user.user_metadata?.full_name as string | undefined) ?? null}
         onRoleSelected={(r, p) => {
           setRole(r);
-          setProfile(p ?? null);
+          setProfile(p ?? {
+            id: user.id,
+            role: r,
+            full_name: (user.user_metadata?.full_name as string | undefined) ?? null,
+            phone: null,
+            state: null,
+            district: null,
+            company_name: null,
+            business_type: null,
+            created_at: new Date().toISOString(),
+          });
           if (r !== 'farmer') setHasConsent(true);
         }}
       />
