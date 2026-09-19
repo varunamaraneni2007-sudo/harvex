@@ -82,9 +82,19 @@ def health_check():
 
 # ── [Step 21] Profile endpoints ───────────────────────────────────────────────
 
+_PROFILE_FIELDS = "id,role,full_name,phone,state,district,created_at"
+
+
 class ProfilePayload(BaseModel):
     role: str        # 'farmer' | 'buyer'
     full_name: Optional[str] = None
+
+
+class ProfileUpdatePayload(BaseModel):
+    full_name: Optional[str] = None
+    phone: Optional[str] = None
+    state: Optional[str] = None
+    district: Optional[str] = None
 
 
 @app.get("/api/profile")
@@ -95,7 +105,7 @@ def get_profile(authorization: Optional[str] = Header(default=None)):
     if sb is None:
         raise HTTPException(status_code=503, detail="Database not configured.")
     try:
-        resp = sb.table("profiles").select("id,role,full_name,created_at").eq("id", uid).execute()
+        resp = sb.table("profiles").select(_PROFILE_FIELDS).eq("id", uid).execute()
         if not resp.data:
             raise HTTPException(status_code=404, detail="Profile not found.")
         return resp.data[0]
@@ -118,7 +128,6 @@ def create_profile(payload: ProfilePayload, authorization: Optional[str] = Heade
     if sb is None:
         raise HTTPException(status_code=503, detail="Database not configured.")
     try:
-        # Check whether a profile already exists
         existing = sb.table("profiles").select("id,role").eq("id", uid).execute()
         if existing.data:
             raise HTTPException(status_code=409, detail="Profile already exists. Role cannot be changed.")
@@ -126,6 +135,49 @@ def create_profile(payload: ProfilePayload, authorization: Optional[str] = Heade
         if payload.full_name:
             row["full_name"] = payload.full_name.strip()
         resp = sb.table("profiles").insert(row).execute()
+        return resp.data[0]
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.patch("/api/profile")
+def update_profile(payload: ProfileUpdatePayload, authorization: Optional[str] = Header(default=None)):
+    """
+    Update mutable profile fields (full_name, phone, state, district).
+    Role is never changed here — pass it in ProfilePayload at creation only.
+    Returns the updated profile row.
+    """
+    uid = _require_user_id(authorization)
+    sb = _get_supabase()
+    if sb is None:
+        raise HTTPException(status_code=503, detail="Database not configured.")
+    try:
+        existing = sb.table("profiles").select("id").eq("id", uid).execute()
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Profile not found.")
+
+        updates: dict = {}
+        if payload.full_name is not None:
+            updates["full_name"] = payload.full_name.strip() or None
+        if payload.phone is not None:
+            phone = payload.phone.strip()
+            if phone and not all(c in "0123456789+- ()" for c in phone):
+                raise HTTPException(status_code=422, detail="Invalid phone number format.")
+            updates["phone"] = phone or None
+        if payload.state is not None:
+            updates["state"] = payload.state.strip() or None
+        if payload.district is not None:
+            updates["district"] = payload.district.strip() or None
+
+        if not updates:
+            resp = sb.table("profiles").select(_PROFILE_FIELDS).eq("id", uid).execute()
+            return resp.data[0]
+
+        resp = sb.table("profiles").update(updates).eq("id", uid).execute()
+        if not resp.data:
+            raise HTTPException(status_code=500, detail="Update returned no data.")
         return resp.data[0]
     except HTTPException:
         raise

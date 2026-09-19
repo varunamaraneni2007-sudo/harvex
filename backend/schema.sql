@@ -10,8 +10,16 @@ CREATE TABLE IF NOT EXISTS profiles (
     id          UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
     role        TEXT    NOT NULL CHECK (role IN ('farmer', 'buyer')),
     full_name   TEXT,
+    phone       TEXT,
+    state       TEXT,
+    district    TEXT,
     created_at  TIMESTAMPTZ DEFAULT now()
 );
+
+-- [Step 24] Add profile fields if table already exists (safe to re-run)
+ALTER TABLE profiles ADD COLUMN IF NOT EXISTS phone    TEXT;
+ALTER TABLE profiles ADD COLUMN IF NOT EXISTS state    TEXT;
+ALTER TABLE profiles ADD COLUMN IF NOT EXISTS district TEXT;
 
 -- 1. Farmer inputs ─────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS farmer_inputs (

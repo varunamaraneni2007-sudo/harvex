@@ -6,7 +6,17 @@ export interface Profile {
   id: string;
   role: UserRole;
   full_name: string | null;
+  phone: string | null;
+  state: string | null;
+  district: string | null;
   created_at: string;
+}
+
+export interface ProfileUpdate {
+  full_name?: string | null;
+  phone?: string | null;
+  state?: string | null;
+  district?: string | null;
 }
 
 /**
@@ -22,6 +32,28 @@ export async function fetchProfile(): Promise<Profile | null> {
   });
   if (resp.status === 404) return null;
   if (!resp.ok) throw new Error(`Failed to fetch profile: ${resp.status}`);
+  return resp.json() as Promise<Profile>;
+}
+
+/**
+ * Update mutable profile fields. Role cannot be changed after creation.
+ */
+export async function updateProfile(updates: ProfileUpdate): Promise<Profile> {
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session) throw new Error('Not authenticated.');
+
+  const resp = await fetch('/api/profile', {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${session.access_token}`,
+    },
+    body: JSON.stringify(updates),
+  });
+  if (!resp.ok) {
+    const body = await resp.json().catch(() => ({}));
+    throw new Error((body as { detail?: string }).detail ?? `HTTP ${resp.status}`);
+  }
   return resp.json() as Promise<Profile>;
 }
 

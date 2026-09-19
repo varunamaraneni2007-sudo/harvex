@@ -4,7 +4,8 @@ import { supabase } from './lib/supabaseClient';
 import AuthPage from './AuthPage';
 import RoleSelectPage from './RoleSelectPage';
 import ConsentPage from './ConsentPage';
-import type { UserRole } from './lib/roleService';
+import FarmerProfilePage from './FarmerProfilePage';
+import type { UserRole, Profile } from './lib/roleService';
 import { fetchProfile } from './lib/roleService';
 import { fetchConsent } from './lib/consentService';
 
@@ -173,7 +174,7 @@ function DistanceBadge({
   );
 }
 
-type View = 'home' | 'form' | 'results' | 'marketplace';
+type View = 'home' | 'form' | 'results' | 'marketplace' | 'profile';
 
 // ── Strategy card ─────────────────────────────────────────────────────────────
 
@@ -973,6 +974,7 @@ export default function App() {
   const [authLoading, setAuthLoading] = useState(true);
   const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
   const [role, setRole] = useState<UserRole | null>(null);
+  const [profile, setProfile] = useState<Profile | null>(null);
   const [roleLoading, setRoleLoading] = useState(false);
   const [hasConsent, setHasConsent] = useState(false);
   const [consentLoading, setConsentLoading] = useState(false);
@@ -988,6 +990,7 @@ export default function App() {
             .then(async (p) => {
               const r = p?.role ?? null;
               setRole(r);
+              setProfile(p);
               if (r === 'farmer') {
                 setConsentLoading(true);
                 const c = await fetchConsent().catch(() => null);
@@ -995,10 +998,11 @@ export default function App() {
                 setConsentLoading(false);
               }
             })
-            .catch(() => setRole(null))
+            .catch(() => { setRole(null); setProfile(null); })
             .finally(() => { setRoleLoading(false); setAuthLoading(false); });
         } else {
           setRole(null);
+          setProfile(null);
           setHasConsent(false);
           setAuthLoading(false);
         }
@@ -1008,6 +1012,7 @@ export default function App() {
           .then(async (p) => {
             const r = p?.role ?? null;
             setRole(r);
+            setProfile(p);
             if (r === 'farmer') {
               setConsentLoading(true);
               const c = await fetchConsent().catch(() => null);
@@ -1015,10 +1020,11 @@ export default function App() {
               setConsentLoading(false);
             }
           })
-          .catch(() => setRole(null))
+          .catch(() => { setRole(null); setProfile(null); })
           .finally(() => setRoleLoading(false));
       } else if (event === 'SIGNED_OUT') {
         setRole(null);
+        setProfile(null);
         setHasConsent(false);
       }
     });
@@ -1331,9 +1337,9 @@ export default function App() {
     return (
       <RoleSelectPage
         fullName={(user.user_metadata?.full_name as string | undefined) ?? null}
-        onRoleSelected={(r) => {
+        onRoleSelected={(r, p) => {
           setRole(r);
-          // Buyers skip consent; farmers start without consent
+          setProfile(p ?? null);
           if (r !== 'farmer') setHasConsent(true);
         }}
       />
@@ -1396,7 +1402,7 @@ export default function App() {
               </span>
             )}
 
-            {/* User info + logout */}
+            {/* User info + profile + logout */}
             <div className="flex items-center gap-2 ml-2 border-l border-gray-100 pl-3">
               {role && (
                 <span className={`text-xs px-2 py-0.5 rounded-full font-medium hidden sm:inline ${
@@ -1404,6 +1410,19 @@ export default function App() {
                 }`}>
                   {role === 'farmer' ? '🌾 Farmer' : '🏪 Buyer'}
                 </span>
+              )}
+              {role === 'farmer' && (
+                <button
+                  onClick={() => setView('profile')}
+                  className={`text-xs px-2.5 py-1.5 rounded-lg font-medium transition ${
+                    view === 'profile'
+                      ? 'bg-green-100 text-green-700'
+                      : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'
+                  }`}
+                  title="My Profile"
+                >
+                  Profile
+                </button>
               )}
               <span className="text-xs text-gray-500 hidden sm:inline truncate max-w-[140px]" title={user.email}>
                 {displayName}
@@ -2116,6 +2135,15 @@ export default function App() {
               </div>
             )}
           </div>
+        )}
+
+        {/* ── PROFILE VIEW ── */}
+        {view === 'profile' && role === 'farmer' && profile && (
+          <FarmerProfilePage
+            user={user}
+            profile={profile}
+            onProfileUpdated={(updated) => setProfile(updated)}
+          />
         )}
       </main>
 
