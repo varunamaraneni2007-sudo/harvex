@@ -189,9 +189,87 @@ CREATE POLICY "farmer_consents: owner insert"
     ON farmer_consents FOR INSERT
     WITH CHECK (auth.uid() = user_id);
 
+-- ── [Step 28] Buyer-specific profile columns ─────────────────────────────────
+ALTER TABLE profiles ADD COLUMN IF NOT EXISTS company_name TEXT;
+ALTER TABLE profiles ADD COLUMN IF NOT EXISTS business_type TEXT;
+
+-- ── [Step 29 / 31] Buyer requirements ────────────────────────────────────────
+-- One row per procurement requirement posted by a buyer.
+CREATE TABLE IF NOT EXISTS buyer_requirements (
+    id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id           UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+    crop              TEXT NOT NULL,
+    quantity_kg       NUMERIC NOT NULL CHECK (quantity_kg > 0),
+    quality           TEXT NOT NULL CHECK (quality IN ('Premium', 'Standard', 'Low', 'Any')),
+    delivery_state    TEXT,
+    delivery_district TEXT,
+    budget_per_kg     NUMERIC CHECK (budget_per_kg IS NULL OR budget_per_kg > 0),
+    needed_by         TEXT,
+    notes             TEXT,
+    is_active         BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at        TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_buyer_requirements_user
+    ON buyer_requirements(user_id);
+
+ALTER TABLE buyer_requirements ENABLE ROW LEVEL SECURITY;
+
+-- A buyer can read only their own requirements
+DROP POLICY IF EXISTS "buyer_requirements: owner select" ON buyer_requirements;
+CREATE POLICY "buyer_requirements: owner select"
+    ON buyer_requirements FOR SELECT
+    USING (
+        auth.uid() = user_id
+        AND EXISTS (
+            SELECT 1 FROM profiles
+            WHERE profiles.id = auth.uid()
+              AND profiles.role = 'buyer'
+        )
+    );
+
+-- A buyer can create their own requirements
+DROP POLICY IF EXISTS "buyer_requirements: owner insert" ON buyer_requirements;
+CREATE POLICY "buyer_requirements: owner insert"
+    ON buyer_requirements FOR INSERT
+    WITH CHECK (
+        auth.uid() = user_id
+        AND EXISTS (
+            SELECT 1 FROM profiles
+            WHERE profiles.id = auth.uid()
+              AND profiles.role = 'buyer'
+        )
+    );
+
+-- A buyer can update their own requirements
+DROP POLICY IF EXISTS "buyer_requirements: owner update" ON buyer_requirements;
+CREATE POLICY "buyer_requirements: owner update"
+    ON buyer_requirements FOR UPDATE
+    USING (
+        auth.uid() = user_id
+        AND EXISTS (
+            SELECT 1 FROM profiles
+            WHERE profiles.id = auth.uid()
+              AND profiles.role = 'buyer'
+        )
+    );
+
+-- A buyer can delete their own requirements
+DROP POLICY IF EXISTS "buyer_requirements: owner delete" ON buyer_requirements;
+CREATE POLICY "buyer_requirements: owner delete"
+    ON buyer_requirements FOR DELETE
+    USING (
+        auth.uid() = user_id
+        AND EXISTS (
+            SELECT 1 FROM profiles
+            WHERE profiles.id = auth.uid()
+              AND profiles.role = 'buyer'
+        )
+    );
+
 -- ── Anonymous access is blocked by default ────────────────────────────────────
 -- No policies grant access to anon role, so anonymous requests are denied
--- on all four tables once RLS is enabled.
+-- on all tables once RLS is enabled.
 
 -- Note: the backend uses the service_role key which bypasses RLS, so
 -- server-side inserts (via /api/submission) continue to work without

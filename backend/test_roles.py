@@ -350,3 +350,128 @@ def test_create_profile_with_wrong_token_returns_401():
             headers={"Authorization": "Bearer bad-token"},
         )
     assert resp.status_code == 401
+
+
+# ── [Step 27] Buyer access control ───────────────────────────────────────────
+
+def test_buyer_cannot_access_farmer_submissions():
+    """A buyer's JWT must not grant access to GET /api/farmer/submissions."""
+    sb = _mock_supabase_with_profile(BUYER_UID, "buyer")
+    with patch("main._get_supabase", return_value=sb):
+        resp = client.get(
+            "/api/farmer/submissions",
+            headers={"Authorization": "Bearer buyer-token"},
+        )
+    assert resp.status_code == 403
+
+
+def test_farmer_can_access_farmer_submissions():
+    """A farmer's JWT returns 200 (not 403) from GET /api/farmer/submissions."""
+    sb = _mock_supabase_with_profile(FARMER_UID, "farmer")
+    # Make farmer_inputs query return empty (no submissions yet)
+    inputs_chain = MagicMock()
+    inputs_chain.execute.return_value = MagicMock(data=[])
+    (sb.table.return_value.select.return_value
+       .eq.return_value.order.return_value.limit.return_value) = inputs_chain
+    with patch("main._get_supabase", return_value=sb):
+        resp = client.get(
+            "/api/farmer/submissions",
+            headers={"Authorization": "Bearer farmer-token"},
+        )
+    assert resp.status_code == 200
+    assert resp.json()["submissions"] == []
+
+
+# ── [Step 27] Buyer registration sequence ─────────────────────────────────────
+
+def test_new_user_has_no_profile_before_role_selection():
+    """GET /api/profile returns 404 for an authenticated user with no profile yet."""
+    sb = _mock_supabase_no_profile(BUYER_UID)
+    with patch("main._get_supabase", return_value=sb):
+        resp = client.get("/api/profile", headers={"Authorization": "Bearer token"})
+    assert resp.status_code == 404
+
+
+def test_buyer_registration_sequence():
+    """
+    End-to-end buyer registration sequence:
+      1. GET /api/profile → 404 (no profile yet)
+      2. POST /api/profile {role: buyer} → 201 with buyer profile
+      3. GET /api/profile → 200 with role=buyer
+    Each step uses its own Supabase mock to simulate sequential state changes.
+    """
+    # Step 1: No profile exists
+    sb_empty = _mock_supabase_no_profile(BUYER_UID)
+    with patch("main._get_supabase", return_value=sb_empty):
+        resp1 = client.get("/api/profile", headers={"Authorization": "Bearer token"})
+    assert resp1.status_code == 404
+
+    # Step 2: Create buyer profile
+    sb_create = _mock_supabase_no_profile(BUYER_UID)
+    buyer_row = {"id": BUYER_UID, "role": "buyer", "full_name": "Priya Sharma", "created_at": "2026-09-19T08:00:00Z"}
+    sb_create.table.return_value.insert.return_value.execute.return_value = MagicMock(data=[buyer_row])
+    with patch("main._get_supabase", return_value=sb_create):
+        resp2 = client.post(
+            "/api/profile",
+            json={"role": "buyer", "full_name": "Priya Sharma"},
+            headers={"Authorization": "Bearer token"},
+        )
+    assert resp2.status_code == 201
+    assert resp2.json()["role"] == "buyer"
+    assert resp2.json()["full_name"] == "Priya Sharma"
+
+    # Step 3: Profile now exists and returns buyer role
+    sb_exists = _mock_supabase_with_profile(BUYER_UID, "buyer")
+    with patch("main._get_supabase", return_value=sb_exists):
+        resp3 = client.get("/api/profile", headers={"Authorization": "Bearer token"})
+    assert resp3.status_code == 200
+    assert resp3.json()["role"] == "buyer"
+
+
+def test_buyer_role_is_immutable_after_registration():
+    """Once registered as buyer, a second POST cannot change the role."""
+    sb = _mock_supabase_with_profile(BUYER_UID, "buyer")
+    with patch("main._get_supabase", return_value=sb):
+        resp = client.post(
+            "/api/profile",
+            json={"role": "farmer"},
+            headers={"Authorization": "Bearer token"},
+        )
+    assert resp.status_code == 409
+
+
+def test_buyer_registration_requires_auth():
+    """POST /api/profile without an Authorization header returns 401."""
+    resp = client.post("/api/profile", json={"role": "buyer"})
+    assert resp.status_code == 401
+
+
+def test_buyer_does_not_require_consent():
+    """
+    Buyers are not blocked by the consent gate.  GET /api/consent returns 404
+    (no record) for a buyer without raising any error — the frontend simply
+    skips the consent page for non-farmer roles.
+    GET /api/consent chain: .select().eq(user_id).eq(version).order().limit().execute()
+    """
+    sb = _mock_supabase_with_profile(BUYER_UID, "buyer")
+    # consent table returns no records (two .eq() calls before .order().limit().execute())
+    (sb.table.return_value.select.return_value
+       .eq.return_value.eq.return_value
+       .order.return_value.limit.return_value
+       .execute.return_value) = MagicMock(data=[])
+    with patch("main._get_supabase", return_value=sb):
+        resp = client.get("/api/consent", headers={"Authorization": "Bearer token"})
+    # 404 means no consent record — acceptable for buyers who skip the page
+    assert resp.status_code == 404
+
+
+def test_farmer_privacy_consent_still_required_for_farmers():
+    """Farmers without consent get 404 from GET /api/consent (not a 200)."""
+    sb = _mock_supabase_with_profile(FARMER_UID, "farmer")
+    (sb.table.return_value.select.return_value
+       .eq.return_value.eq.return_value
+       .order.return_value.limit.return_value
+       .execute.return_value) = MagicMock(data=[])
+    with patch("main._get_supabase", return_value=sb):
+        resp = client.get("/api/consent", headers={"Authorization": "Bearer token"})
+    assert resp.status_code == 404

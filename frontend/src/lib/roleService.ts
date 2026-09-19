@@ -9,6 +9,8 @@ export interface Profile {
   phone: string | null;
   state: string | null;
   district: string | null;
+  company_name: string | null;
+  business_type: string | null;
   created_at: string;
 }
 
@@ -17,6 +19,8 @@ export interface ProfileUpdate {
   phone?: string | null;
   state?: string | null;
   district?: string | null;
+  company_name?: string | null;
+  business_type?: string | null;
 }
 
 /**

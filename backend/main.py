@@ -82,7 +82,7 @@ def health_check():
 
 # ── [Step 21] Profile endpoints ───────────────────────────────────────────────
 
-_PROFILE_FIELDS = "id,role,full_name,phone,state,district,created_at"
+_PROFILE_FIELDS = "id,role,full_name,phone,state,district,company_name,business_type,created_at"
 
 
 class ProfilePayload(BaseModel):
@@ -95,6 +95,8 @@ class ProfileUpdatePayload(BaseModel):
     phone: Optional[str] = None
     state: Optional[str] = None
     district: Optional[str] = None
+    company_name: Optional[str] = None
+    business_type: Optional[str] = None
 
 
 @app.get("/api/profile")
@@ -170,6 +172,10 @@ def update_profile(payload: ProfileUpdatePayload, authorization: Optional[str] =
             updates["state"] = payload.state.strip() or None
         if payload.district is not None:
             updates["district"] = payload.district.strip() or None
+        if payload.company_name is not None:
+            updates["company_name"] = payload.company_name.strip() or None
+        if payload.business_type is not None:
+            updates["business_type"] = payload.business_type.strip() or None
 
         if not updates:
             resp = sb.table("profiles").select(_PROFILE_FIELDS).eq("id", uid).execute()
@@ -365,6 +371,287 @@ ALLOCATION_STRATEGIES = [
         "spoilage_weight": 5.0,
     },
 ]
+
+
+# ── [Step 29 / 30 / 31] Buyer requirements CRUD ──────────────────────────────
+
+_REQUIREMENT_FIELDS = (
+    "id,user_id,crop,quantity_kg,quality,"
+    "delivery_state,delivery_district,budget_per_kg,"
+    "needed_by,notes,is_active,created_at"
+)
+_VALID_QUALITIES = {"Premium", "Standard", "Low", "Any"}
+
+
+def _validate_needed_by(needed_by: Optional[str]) -> Optional[str]:
+    """
+    Validate and normalise a needed_by date string.
+    - Must parse as YYYY-MM-DD.
+    - Must not be in the past (compared to today's date in UTC).
+    Returns the normalised date string, or raises HTTPException 422.
+    Returns None when the input is None or blank (field is optional).
+    """
+    from datetime import date as _date
+    if needed_by is None:
+        return None
+    val = needed_by.strip()
+    if not val:
+        return None
+    try:
+        parsed = _date.fromisoformat(val)
+    except ValueError:
+        raise HTTPException(
+            status_code=422,
+            detail="needed_by must be a valid date in YYYY-MM-DD format.",
+        )
+    if parsed < _date.today():
+        raise HTTPException(
+            status_code=422,
+            detail="needed_by cannot be in the past.",
+        )
+    return val
+
+
+def _require_buyer(uid: str, sb) -> None:
+    """Raise 403 if the authenticated user is not a buyer."""
+    resp = sb.table("profiles").select("role").eq("id", uid).execute()
+    if not resp.data or resp.data[0].get("role") != "buyer":
+        raise HTTPException(status_code=403, detail="Only buyers can access this endpoint.")
+
+
+class BuyerRequirementPayload(BaseModel):
+    crop: str
+    quantity_kg: float
+    quality: str       # 'Premium' | 'Standard' | 'Low' | 'Any'
+    delivery_state: Optional[str] = None
+    delivery_district: Optional[str] = None
+    budget_per_kg: Optional[float] = None
+    needed_by: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class BuyerRequirementUpdatePayload(BaseModel):
+    crop: Optional[str] = None
+    quantity_kg: Optional[float] = None
+    quality: Optional[str] = None
+    delivery_state: Optional[str] = None
+    delivery_district: Optional[str] = None
+    budget_per_kg: Optional[float] = None
+    needed_by: Optional[str] = None
+    notes: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
+@app.get("/api/buyer/requirements")
+def get_buyer_requirements(authorization: Optional[str] = Header(default=None)):
+    """Return the authenticated buyer's procurement requirements, newest first."""
+    uid = _require_user_id(authorization)
+    sb = _get_supabase()
+    if sb is None:
+        raise HTTPException(status_code=503, detail="Database not configured.")
+    try:
+        _require_buyer(uid, sb)
+        resp = (
+            sb.table("buyer_requirements")
+            .select(_REQUIREMENT_FIELDS)
+            .eq("user_id", uid)
+            .order("created_at", desc=True)
+            .execute()
+        )
+        return {"requirements": resp.data, "total": len(resp.data)}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/api/buyer/requirements", status_code=201)
+def create_buyer_requirement(
+    payload: BuyerRequirementPayload,
+    authorization: Optional[str] = Header(default=None),
+):
+    """Create a new procurement requirement for the authenticated buyer."""
+    crop = payload.crop.strip() if payload.crop else ""
+    if not crop:
+        raise HTTPException(status_code=422, detail="crop is required.")
+    if payload.quantity_kg <= 0:
+        raise HTTPException(status_code=422, detail="quantity_kg must be greater than 0.")
+    if payload.quality not in _VALID_QUALITIES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"quality must be one of: {', '.join(sorted(_VALID_QUALITIES))}.",
+        )
+    if payload.budget_per_kg is not None and payload.budget_per_kg <= 0:
+        raise HTTPException(status_code=422, detail="budget_per_kg must be greater than 0.")
+
+    uid = _require_user_id(authorization)
+    sb = _get_supabase()
+    if sb is None:
+        raise HTTPException(status_code=503, detail="Database not configured.")
+    try:
+        _require_buyer(uid, sb)
+        row: dict = {
+            "user_id": uid,
+            "crop": crop,
+            "quantity_kg": payload.quantity_kg,
+            "quality": payload.quality,
+        }
+        if payload.delivery_state is not None:
+            row["delivery_state"] = payload.delivery_state.strip() or None
+        if payload.delivery_district is not None:
+            row["delivery_district"] = payload.delivery_district.strip() or None
+        if payload.budget_per_kg is not None:
+            row["budget_per_kg"] = payload.budget_per_kg
+        needed_by_val = _validate_needed_by(payload.needed_by)
+        if needed_by_val is not None:
+            row["needed_by"] = needed_by_val
+        if payload.notes is not None:
+            row["notes"] = payload.notes.strip() or None
+        resp = sb.table("buyer_requirements").insert(row).execute()
+        return resp.data[0]
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.patch("/api/buyer/requirements/{req_id}")
+def update_buyer_requirement(
+    req_id: str,
+    payload: BuyerRequirementUpdatePayload,
+    authorization: Optional[str] = Header(default=None),
+):
+    """Update a buyer's own procurement requirement."""
+    uid = _require_user_id(authorization)
+    sb = _get_supabase()
+    if sb is None:
+        raise HTTPException(status_code=503, detail="Database not configured.")
+    try:
+        _require_buyer(uid, sb)
+        existing = sb.table("buyer_requirements").select("id,user_id").eq("id", req_id).execute()
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Requirement not found.")
+        if existing.data[0]["user_id"] != uid:
+            raise HTTPException(status_code=403, detail="You can only update your own requirements.")
+
+        updates: dict = {}
+        if payload.crop is not None:
+            crop = payload.crop.strip()
+            if not crop:
+                raise HTTPException(status_code=422, detail="crop cannot be empty.")
+            updates["crop"] = crop
+        if payload.quantity_kg is not None:
+            if payload.quantity_kg <= 0:
+                raise HTTPException(status_code=422, detail="quantity_kg must be greater than 0.")
+            updates["quantity_kg"] = payload.quantity_kg
+        if payload.quality is not None:
+            if payload.quality not in _VALID_QUALITIES:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"quality must be one of: {', '.join(sorted(_VALID_QUALITIES))}.",
+                )
+            updates["quality"] = payload.quality
+        if payload.delivery_state is not None:
+            updates["delivery_state"] = payload.delivery_state.strip() or None
+        if payload.delivery_district is not None:
+            updates["delivery_district"] = payload.delivery_district.strip() or None
+        if payload.budget_per_kg is not None:
+            if payload.budget_per_kg <= 0:
+                raise HTTPException(status_code=422, detail="budget_per_kg must be greater than 0.")
+            updates["budget_per_kg"] = payload.budget_per_kg
+        if payload.needed_by is not None:
+            updates["needed_by"] = _validate_needed_by(payload.needed_by)
+        if payload.notes is not None:
+            updates["notes"] = payload.notes.strip() or None
+        if payload.is_active is not None:
+            updates["is_active"] = payload.is_active
+
+        if not updates:
+            resp = sb.table("buyer_requirements").select(_REQUIREMENT_FIELDS).eq("id", req_id).execute()
+            return resp.data[0]
+
+        resp = sb.table("buyer_requirements").update(updates).eq("id", req_id).execute()
+        if not resp.data:
+            raise HTTPException(status_code=500, detail="Update returned no data.")
+        return resp.data[0]
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.delete("/api/buyer/requirements/{req_id}", status_code=204)
+def delete_buyer_requirement(
+    req_id: str,
+    authorization: Optional[str] = Header(default=None),
+):
+    """Delete the buyer's own procurement requirement."""
+    uid = _require_user_id(authorization)
+    sb = _get_supabase()
+    if sb is None:
+        raise HTTPException(status_code=503, detail="Database not configured.")
+    try:
+        _require_buyer(uid, sb)
+        existing = sb.table("buyer_requirements").select("id,user_id").eq("id", req_id).execute()
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Requirement not found.")
+        if existing.data[0]["user_id"] != uid:
+            raise HTTPException(status_code=403, detail="You can only delete your own requirements.")
+        sb.table("buyer_requirements").delete().eq("id", req_id).execute()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+# ── [Step 25] Farmer Dashboard — submission history ──────────────────────────
+
+@app.get("/api/farmer/submissions")
+def farmer_submissions(
+    limit: int = Query(5, ge=1, le=20),
+    authorization: Optional[str] = Header(default=None),
+):
+    """
+    Return the authenticated farmer's most recent submission history.
+    Each item includes the farmer_inputs row and the optimize_recommended
+    decision result (if saved).  Returns an empty list when no submissions
+    exist — never 404.
+    """
+    uid = _require_user_id(authorization)
+    sb = _get_supabase()
+    if sb is None:
+        raise HTTPException(status_code=503, detail="Database not configured.")
+    try:
+        profile_resp = sb.table("profiles").select("role").eq("id", uid).execute()
+        if not profile_resp.data or profile_resp.data[0].get("role") != "farmer":
+            raise HTTPException(status_code=403, detail="Only farmers can access this endpoint.")
+        inputs_resp = (
+            sb.table("farmer_inputs")
+            .select("id,crop,quantity_kg,quality,farmer_location,harvest_date,shelf_life_days,created_at")
+            .eq("user_id", uid)
+            .order("created_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        submissions = []
+        for fi in inputs_resp.data:
+            result_resp = (
+                sb.table("decision_results")
+                .select("plan_name,total_allocated_kg,gross_revenue,transport_cost,spoilage_loss,expected_net_value")
+                .eq("farmer_input_id", fi["id"])
+                .eq("plan_name", "optimize_recommended")
+                .limit(1)
+                .execute()
+            )
+            submissions.append({
+                "farmer_input": fi,
+                "recommended_result": result_resp.data[0] if result_resp.data else None,
+            })
+        return {"submissions": submissions, "total": len(submissions)}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 # ── /api/recommend (single-channel, v1) ──────────────────────────────────────

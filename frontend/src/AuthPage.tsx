@@ -101,7 +101,7 @@ export default function AuthPage({ mode, onModeChange }: AuthPageProps) {
         </h2>
         <p className="text-sm text-gray-500 mb-6">
           {mode === 'register'
-            ? 'Start maximising your harvest income today.'
+            ? 'Join Harvex as a farmer or buyer — choose your role after sign-up.'
             : 'Welcome back! Enter your credentials to continue.'}
         </p>
 
