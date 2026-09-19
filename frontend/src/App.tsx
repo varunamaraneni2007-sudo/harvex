@@ -671,6 +671,199 @@ function BuyerCard({
   );
 }
 
+// ── Crop Catalogue ────────────────────────────────────────────────────────────
+
+const CROP_CATALOGUE = [
+  { category: 'Vegetables', emoji: '🥦', crops: ['Tomato','Onion','Potato','Brinjal','Cabbage','Cauliflower','Carrot','Green Chilli','Okra','Bottle Gourd','Bitter Gourd','Ridge Gourd','Cucumber','Spinach'] },
+  { category: 'Fruits',     emoji: '🍎', crops: ['Mango','Banana','Papaya','Guava','Pomegranate','Watermelon','Muskmelon','Orange','Grapes','Apple'] },
+  { category: 'Flowers',    emoji: '🌸', crops: ['Rose','Marigold','Jasmine','Chrysanthemum','Tuberose'] },
+  { category: 'Cereals',    emoji: '🌾', crops: ['Rice','Maize','Wheat','Sorghum','Pearl Millet'] },
+  { category: 'Pulses',     emoji: '🫘', crops: ['Chickpea','Pigeon Pea','Green Gram','Black Gram','Lentil'] },
+  { category: 'Spices',     emoji: '🌶️', crops: ['Turmeric','Ginger','Garlic','Coriander','Cumin','Red Chilli'] },
+  { category: 'Oilseeds',   emoji: '🌻', crops: ['Groundnut','Sesame','Sunflower','Soybean'] },
+];
+
+// ── Crop Selector Component ───────────────────────────────────────────────────
+
+function CropSelector({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState('');
+  const [activeCategory, setActiveCategory] = useState(CROP_CATALOGUE[0].category);
+  const [otherMode, setOtherMode] = useState(false);
+  const [otherText, setOtherText] = useState('');
+
+  const allCrops = CROP_CATALOGUE.flatMap((c) => c.crops);
+  const isOtherValue = value && !allCrops.includes(value);
+
+  const searchLower = search.trim().toLowerCase();
+  const searchResults = searchLower
+    ? CROP_CATALOGUE.flatMap((c) => c.crops.filter((cr) => cr.toLowerCase().includes(searchLower)))
+    : null;
+
+  const activeCategoryObj = CROP_CATALOGUE.find((c) => c.category === activeCategory)!;
+
+  function selectCrop(name: string) {
+    onChange(name);
+    setOpen(false);
+    setSearch('');
+    setOtherMode(false);
+  }
+
+  function handleOtherSubmit() {
+    const v = otherText.trim();
+    if (v) { onChange(v); setOpen(false); setSearch(''); setOtherMode(false); setOtherText(''); }
+  }
+
+  return (
+    <div className="relative">
+      {/* Trigger button */}
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:ring-2 focus:ring-green-500 focus:border-green-500 outline-none text-sm transition bg-white text-left flex items-center justify-between"
+      >
+        {value ? (
+          <span className="flex items-center gap-2">
+            <span className="font-medium text-gray-800">{value}</span>
+            {isOtherValue && <span className="text-xs text-gray-400">(custom)</span>}
+          </span>
+        ) : (
+          <span className="text-gray-300">Select a crop…</span>
+        )}
+        <span className="text-gray-400 ml-2">{open ? '▲' : '▼'}</span>
+      </button>
+
+      {/* Clear button when a crop is selected */}
+      {value && !open && (
+        <button
+          type="button"
+          onClick={() => { onChange(''); setOtherText(''); }}
+          className="absolute right-9 top-1/2 -translate-y-1/2 text-gray-300 hover:text-gray-500 text-sm px-1"
+          aria-label="Clear crop"
+        >✕</button>
+      )}
+
+      {/* Dropdown panel */}
+      {open && (
+        <div className="absolute z-50 mt-1 w-full bg-white border border-gray-200 rounded-2xl shadow-xl overflow-hidden">
+          {/* Search */}
+          <div className="p-3 border-b border-gray-100">
+            <input
+              autoFocus
+              type="text"
+              placeholder="Search crops…"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="w-full px-3 py-2 text-sm rounded-lg border border-gray-200 focus:ring-2 focus:ring-green-500 focus:border-green-500 outline-none"
+            />
+          </div>
+
+          {searchResults ? (
+            /* Search results grid */
+            <div className="p-3 max-h-56 overflow-y-auto">
+              {searchResults.length === 0 ? (
+                <p className="text-sm text-gray-400 text-center py-4">No crops matched. Use "Other" below.</p>
+              ) : (
+                <div className="grid grid-cols-3 gap-1.5">
+                  {searchResults.map((cr) => (
+                    <button
+                      key={cr}
+                      type="button"
+                      onClick={() => selectCrop(cr)}
+                      className={`text-xs px-2 py-1.5 rounded-lg text-left transition font-medium ${
+                        value === cr
+                          ? 'bg-green-600 text-white'
+                          : 'bg-gray-50 text-gray-700 hover:bg-green-50 hover:text-green-700'
+                      }`}
+                    >
+                      {cr}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          ) : (
+            /* Category browser */
+            <div className="flex">
+              {/* Category tabs */}
+              <div className="flex flex-col border-r border-gray-100 min-w-[110px]">
+                {CROP_CATALOGUE.map((cat) => (
+                  <button
+                    key={cat.category}
+                    type="button"
+                    onClick={() => setActiveCategory(cat.category)}
+                    className={`text-xs px-3 py-2.5 text-left transition font-medium ${
+                      activeCategory === cat.category
+                        ? 'bg-green-50 text-green-700 border-r-2 border-green-500'
+                        : 'text-gray-500 hover:bg-gray-50'
+                    }`}
+                  >
+                    {cat.emoji} {cat.category}
+                  </button>
+                ))}
+              </div>
+              {/* Crop grid */}
+              <div className="flex-1 p-3 max-h-56 overflow-y-auto">
+                <div className="grid grid-cols-2 gap-1.5">
+                  {activeCategoryObj.crops.map((cr) => (
+                    <button
+                      key={cr}
+                      type="button"
+                      onClick={() => selectCrop(cr)}
+                      className={`text-xs px-2 py-1.5 rounded-lg text-left transition font-medium ${
+                        value === cr
+                          ? 'bg-green-600 text-white'
+                          : 'bg-gray-50 text-gray-700 hover:bg-green-50 hover:text-green-700'
+                      }`}
+                    >
+                      {cr}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Other / custom crop */}
+          <div className="border-t border-gray-100 p-3">
+            {otherMode ? (
+              <div className="flex gap-2">
+                <input
+                  autoFocus
+                  type="text"
+                  placeholder="Type crop name…"
+                  value={otherText}
+                  onChange={(e) => setOtherText(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleOtherSubmit(); } }}
+                  className="flex-1 px-3 py-1.5 text-sm rounded-lg border border-gray-200 focus:ring-2 focus:ring-green-500 outline-none"
+                />
+                <button
+                  type="button"
+                  onClick={handleOtherSubmit}
+                  className="px-3 py-1.5 text-sm rounded-lg bg-green-600 text-white font-medium hover:bg-green-700 transition"
+                >OK</button>
+                <button
+                  type="button"
+                  onClick={() => setOtherMode(false)}
+                  className="px-3 py-1.5 text-sm rounded-lg border border-gray-200 text-gray-500 hover:bg-gray-50 transition"
+                >Cancel</button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setOtherMode(true)}
+                className="w-full text-xs text-gray-400 hover:text-green-700 hover:bg-green-50 rounded-lg py-1.5 transition text-center font-medium"
+              >
+                + Other (type a crop name)
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Main App ──────────────────────────────────────────────────────────────────
 
 export default function App() {
@@ -1051,18 +1244,12 @@ export default function App() {
 
               <form onSubmit={handleSubmit} className="space-y-5">
                 <div>
-                  <label htmlFor="crop" className="block text-sm font-semibold text-gray-700 mb-1.5">
+                  <label className="block text-sm font-semibold text-gray-700 mb-1.5">
                     Crop / Produce <span className="text-red-400">*</span>
                   </label>
-                  <input
-                    id="crop"
-                    type="text"
-                    required
-                    placeholder="e.g. Tomatoes, Onions, Wheat"
-                    value={crop}
-                    onChange={(e) => setCrop(e.target.value)}
-                    className={inputCls}
-                  />
+                  {/* Hidden native input keeps browser form validation working */}
+                  <input type="text" required value={crop} onChange={() => {}} className="sr-only" tabIndex={-1} aria-hidden />
+                  <CropSelector value={crop} onChange={setCrop} />
                 </div>
 
                 <div className="grid grid-cols-2 gap-4">
