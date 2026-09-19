@@ -267,65 +267,25 @@ class ProduceInput(BaseModel):
     shelf_life_days: int
 
 
-# ── Sample market data ────────────────────────────────────────────────────────
+# ── Market catalogue (data-driven) ───────────────────────────────────────────
 
-MARKETS = [
-    {
-        "market_name": "Local Mandi",
-        "location": "Vijayawada",
-        "base_price_per_kg": 12.0,
-        "transport_cost_per_kg": 0.5,
-        "capacity_kg": 500.0,
-        "base_spoilage_pct": 3.0,
-        "buyer_type": "Local Mandi",
-        "accepted_crops": ["all"],
-        "min_quality": "Low",
-    },
-    {
-        "market_name": "Guntur Wholesale Hub",
-        "location": "Guntur",
-        "base_price_per_kg": 15.0,
-        "transport_cost_per_kg": 1.2,
-        "capacity_kg": 2000.0,
-        "base_spoilage_pct": 5.0,
-        "buyer_type": "Wholesale Buyer",
-        "accepted_crops": ["all"],
-        "min_quality": "Low",
-    },
-    {
-        "market_name": "Hyderabad Metro Market",
-        "location": "Hyderabad",
-        "base_price_per_kg": 20.0,
-        "transport_cost_per_kg": 3.5,
-        "capacity_kg": 5000.0,
-        "base_spoilage_pct": 8.0,
-        "buyer_type": "Retail Chain",
-        "accepted_crops": ["all"],
-        "min_quality": "Standard",
-    },
-    {
-        "market_name": "FreshLink Retail Aggregator",
-        "location": "Vijayawada",
-        "base_price_per_kg": 18.0,
-        "transport_cost_per_kg": 0.8,
-        "capacity_kg": 300.0,
-        "base_spoilage_pct": 2.0,
-        "buyer_type": "Retail Chain",
-        "accepted_crops": ["all"],
-        "min_quality": "Standard",
-    },
-    {
-        "market_name": "FreezeMart Cold Storage",
-        "location": "Guntur",
-        "base_price_per_kg": 14.0,
-        "transport_cost_per_kg": 1.5,
-        "capacity_kg": 10000.0,
-        "base_spoilage_pct": 1.0,
-        "buyer_type": "Cold Storage",
-        "accepted_crops": ["all"],
-        "min_quality": "Low",
-    },
-]
+def _load_markets() -> List[dict]:
+    """
+    Load the market catalogue from data/markets.json relative to this file.
+    The JSON file is the single source of truth for market operational parameters
+    (price, capacity, transport cost, spoilage rate, quality threshold, buyer type).
+    Falls back to an empty list on any I/O or parse error so the app still starts.
+    """
+    import json
+    catalogue_path = os.path.join(os.path.dirname(__file__), "data", "markets.json")
+    try:
+        with open(catalogue_path, encoding="utf-8") as fh:
+            return json.load(fh)
+    except Exception:
+        return []
+
+
+MARKETS: List[dict] = _load_markets()
 
 QUALITY_MULTIPLIER = {
     "Premium": 1.15,

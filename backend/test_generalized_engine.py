@@ -380,3 +380,71 @@ def test_existing_demo_scenario_unchanged():
     assert result.recommended.total_quantity_allocated <= 400.01
     assert result.recommended.total_net_value > 0
     assert len(result.recommended.allocations) >= 2
+
+
+# ── Step 33: Market catalogue loaded from data file, not source code ──────────
+
+def test_markets_loaded_from_json_file():
+    """MARKETS is populated by reading data/markets.json, not from Python literals."""
+    import json, os
+    catalogue_path = os.path.join(os.path.dirname(__file__), "data", "markets.json")
+    with open(catalogue_path, encoding="utf-8") as fh:
+        file_markets = json.load(fh)
+    assert len(MARKETS) == len(file_markets)
+    for m_file, m_runtime in zip(file_markets, MARKETS):
+        assert m_file["market_name"] == m_runtime["market_name"]
+        assert m_file["base_price_per_kg"] == m_runtime["base_price_per_kg"]
+
+
+def test_markets_json_has_required_engine_fields():
+    """Every market in data/markets.json contains all fields the engine requires."""
+    required = {
+        "market_name", "base_price_per_kg", "transport_cost_per_kg",
+        "capacity_kg", "base_spoilage_pct", "buyer_type", "accepted_crops", "min_quality",
+    }
+    for m in MARKETS:
+        missing = required - m.keys()
+        assert not missing, f"Market '{m.get('market_name')}' missing fields: {missing}"
+
+
+def test_load_markets_tolerates_missing_file(tmp_path, monkeypatch):
+    """_load_markets returns [] gracefully when the JSON file does not exist."""
+    import main as m_mod
+    monkeypatch.setattr(m_mod.os.path, "join", lambda *a: str(tmp_path / "nonexistent.json"))
+    result = m_mod._load_markets()
+    assert result == []
+
+
+def test_load_markets_tolerates_corrupt_file(tmp_path, monkeypatch):
+    """_load_markets returns [] gracefully when the JSON file is malformed."""
+    import main as m_mod
+    bad = tmp_path / "markets.json"
+    bad.write_text("{not valid json", encoding="utf-8")
+    monkeypatch.setattr(m_mod.os.path, "join", lambda *a: str(bad))
+    result = m_mod._load_markets()
+    assert result == []
+
+
+def test_markets_catalogue_is_externally_configurable(tmp_path, monkeypatch):
+    """_load_markets reads whatever markets.json contains — engine is not tied to fixed entries."""
+    import json, main as m_mod
+    custom = [
+        {
+            "market_name": "Custom Test Market",
+            "location": "Test City",
+            "base_price_per_kg": 30.0,
+            "transport_cost_per_kg": 2.0,
+            "capacity_kg": 800.0,
+            "base_spoilage_pct": 4.0,
+            "buyer_type": "Wholesale Buyer",
+            "accepted_crops": ["all"],
+            "min_quality": "Low",
+        }
+    ]
+    custom_file = tmp_path / "markets.json"
+    custom_file.write_text(json.dumps(custom), encoding="utf-8")
+    monkeypatch.setattr(m_mod.os.path, "join", lambda *a: str(custom_file))
+    result = m_mod._load_markets()
+    assert len(result) == 1
+    assert result[0]["market_name"] == "Custom Test Market"
+    assert result[0]["base_price_per_kg"] == 30.0
