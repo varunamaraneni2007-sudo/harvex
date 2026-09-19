@@ -6,6 +6,7 @@ import RoleSelectPage from './RoleSelectPage';
 import ConsentPage from './ConsentPage';
 import FarmerProfilePage from './FarmerProfilePage';
 import FarmerDashboard from './FarmerDashboard';
+import BuyerHome from './BuyerHome';
 import type { UserRole, Profile } from './lib/roleService';
 import { fetchProfile } from './lib/roleService';
 import { fetchConsent } from './lib/consentService';
@@ -1403,11 +1404,6 @@ export default function App() {
                 </button>
               </>
             )}
-            {view === 'home' && role !== 'farmer' && (
-              <span className="text-xs font-semibold text-green-700 bg-green-50 px-3 py-1 rounded-full border border-green-200">
-                Hackathon Prototype
-              </span>
-            )}
 
             {/* User info + profile + logout */}
             <div className="flex items-center gap-2 ml-2 border-l border-gray-100 pl-3">
@@ -1460,61 +1456,12 @@ export default function App() {
           />
         )}
 
-        {view === 'home' && role !== 'farmer' && (
-          <div className="w-full max-w-3xl mx-auto">
-            <div className="text-center py-12">
-              <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-green-100 text-green-800 text-sm font-semibold mb-8 border border-green-200">
-                🌾 From Harvest to Value
-              </div>
-              <h1 className="text-5xl sm:text-6xl font-extrabold text-gray-900 tracking-tight mb-5">
-                Farm2Value
-              </h1>
-              <p className="text-xl text-gray-500 font-normal mb-10 max-w-md mx-auto leading-relaxed">
-                Maximise your harvest income with AI-powered market allocation and buyer discovery.
-              </p>
-              <div className="flex flex-col sm:flex-row items-center justify-center gap-4 mb-16">
-                <button
-                  onClick={handleStart}
-                  className="inline-flex items-center justify-center px-8 py-4 text-base font-semibold text-white bg-green-600 hover:bg-green-700 rounded-2xl shadow-lg hover:shadow-xl transition-all active:scale-95"
-                >
-                  Start Selling Decision →
-                </button>
-                <button
-                  onClick={() => setView('marketplace')}
-                  className="inline-flex items-center justify-center px-6 py-4 text-base font-semibold text-green-700 bg-white border-2 border-green-200 hover:border-green-400 hover:bg-green-50 rounded-2xl shadow-sm transition-all active:scale-95"
-                >
-                  🏪 Browse Marketplace
-                </button>
-              </div>
-
-              {/* Feature highlights */}
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-left">
-                {[
-                  {
-                    icon: '📊',
-                    title: 'Smart Allocation',
-                    desc: 'Linear programming optimises which markets get your produce to maximise net value.',
-                  },
-                  {
-                    icon: '🔮',
-                    title: 'What-If Scenarios',
-                    desc: 'Simulate transport disruptions, price drops, or buyer cancellations before they happen.',
-                  },
-                  {
-                    icon: '🏪',
-                    title: 'Buyer Marketplace',
-                    desc: 'Discover mandis, wholesale hubs, retail chains, and cold storage buyers near you.',
-                  },
-                ].map((f) => (
-                  <div key={f.title} className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5">
-                    <div className="text-2xl mb-3">{f.icon}</div>
-                    <div className="font-semibold text-gray-900 mb-1.5">{f.title}</div>
-                    <div className="text-sm text-gray-500 leading-relaxed">{f.desc}</div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
+        {view === 'home' && role === 'buyer' && profile && (
+          <BuyerHome
+            user={user}
+            profile={profile}
+            onGoToMarketplace={() => setView('marketplace')}
+          />
         )}
 
         {/* ── FORM VIEW ── */}

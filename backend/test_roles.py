@@ -350,3 +350,33 @@ def test_create_profile_with_wrong_token_returns_401():
             headers={"Authorization": "Bearer bad-token"},
         )
     assert resp.status_code == 401
+
+
+# ── [Step 27] Buyer access control ───────────────────────────────────────────
+
+def test_buyer_cannot_access_farmer_submissions():
+    """A buyer's JWT must not grant access to GET /api/farmer/submissions."""
+    sb = _mock_supabase_with_profile(BUYER_UID, "buyer")
+    with patch("main._get_supabase", return_value=sb):
+        resp = client.get(
+            "/api/farmer/submissions",
+            headers={"Authorization": "Bearer buyer-token"},
+        )
+    assert resp.status_code == 403
+
+
+def test_farmer_can_access_farmer_submissions():
+    """A farmer's JWT returns 200 (not 403) from GET /api/farmer/submissions."""
+    sb = _mock_supabase_with_profile(FARMER_UID, "farmer")
+    # Make farmer_inputs query return empty (no submissions yet)
+    inputs_chain = MagicMock()
+    inputs_chain.execute.return_value = MagicMock(data=[])
+    (sb.table.return_value.select.return_value
+       .eq.return_value.order.return_value.limit.return_value) = inputs_chain
+    with patch("main._get_supabase", return_value=sb):
+        resp = client.get(
+            "/api/farmer/submissions",
+            headers={"Authorization": "Bearer farmer-token"},
+        )
+    assert resp.status_code == 200
+    assert resp.json()["submissions"] == []

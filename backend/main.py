@@ -385,6 +385,9 @@ def farmer_submissions(
     if sb is None:
         raise HTTPException(status_code=503, detail="Database not configured.")
     try:
+        profile_resp = sb.table("profiles").select("role").eq("id", uid).execute()
+        if not profile_resp.data or profile_resp.data[0].get("role") != "farmer":
+            raise HTTPException(status_code=403, detail="Only farmers can access this endpoint.")
         inputs_resp = (
             sb.table("farmer_inputs")
             .select("id,crop,quantity_kg,quality,farmer_location,harvest_date,shelf_life_days,created_at")

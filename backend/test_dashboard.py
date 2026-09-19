@@ -43,6 +43,11 @@ def _mock_sb_with_submissions(uid: str, inputs=None, result=None):
     inputs = inputs if inputs is not None else [SAMPLE_INPUT]
     result_data = [result] if result else [SAMPLE_RESULT]
 
+    # profiles role check: select().eq().execute() → farmer role
+    sb.table.return_value.select.return_value.eq.return_value.execute.return_value = MagicMock(
+        data=[{"role": "farmer"}]
+    )
+
     # farmer_inputs chain: select().eq().order().limit().execute()
     inputs_chain = MagicMock()
     inputs_chain.execute.return_value = MagicMock(data=inputs)
@@ -62,6 +67,11 @@ def _mock_sb_no_submissions(uid: str):
     user_mock = MagicMock()
     user_mock.id = uid
     sb.auth.get_user.return_value = MagicMock(user=user_mock)
+
+    # profiles role check
+    sb.table.return_value.select.return_value.eq.return_value.execute.return_value = MagicMock(
+        data=[{"role": "farmer"}]
+    )
 
     empty_chain = MagicMock()
     empty_chain.execute.return_value = MagicMock(data=[])
@@ -162,6 +172,11 @@ def test_submissions_limit_param_is_respected():
     user_mock = MagicMock()
     user_mock.id = FARMER_UID
     sb.auth.get_user.return_value = MagicMock(user=user_mock)
+
+    # profiles role check
+    sb.table.return_value.select.return_value.eq.return_value.execute.return_value = MagicMock(
+        data=[{"role": "farmer"}]
+    )
 
     chain = MagicMock()
     chain.execute.return_value = MagicMock(data=[])
