@@ -367,6 +367,53 @@ ALLOCATION_STRATEGIES = [
 ]
 
 
+# ── [Step 25] Farmer Dashboard — submission history ──────────────────────────
+
+@app.get("/api/farmer/submissions")
+def farmer_submissions(
+    limit: int = Query(5, ge=1, le=20),
+    authorization: Optional[str] = Header(default=None),
+):
+    """
+    Return the authenticated farmer's most recent submission history.
+    Each item includes the farmer_inputs row and the optimize_recommended
+    decision result (if saved).  Returns an empty list when no submissions
+    exist — never 404.
+    """
+    uid = _require_user_id(authorization)
+    sb = _get_supabase()
+    if sb is None:
+        raise HTTPException(status_code=503, detail="Database not configured.")
+    try:
+        inputs_resp = (
+            sb.table("farmer_inputs")
+            .select("id,crop,quantity_kg,quality,farmer_location,harvest_date,shelf_life_days,created_at")
+            .eq("user_id", uid)
+            .order("created_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        submissions = []
+        for fi in inputs_resp.data:
+            result_resp = (
+                sb.table("decision_results")
+                .select("plan_name,total_allocated_kg,gross_revenue,transport_cost,spoilage_loss,expected_net_value")
+                .eq("farmer_input_id", fi["id"])
+                .eq("plan_name", "optimize_recommended")
+                .limit(1)
+                .execute()
+            )
+            submissions.append({
+                "farmer_input": fi,
+                "recommended_result": result_resp.data[0] if result_resp.data else None,
+            })
+        return {"submissions": submissions, "total": len(submissions)}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
 # ── /api/recommend (single-channel, v1) ──────────────────────────────────────
 
 class OpportunityResult(BaseModel):

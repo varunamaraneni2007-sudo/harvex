@@ -5,6 +5,7 @@ import AuthPage from './AuthPage';
 import RoleSelectPage from './RoleSelectPage';
 import ConsentPage from './ConsentPage';
 import FarmerProfilePage from './FarmerProfilePage';
+import FarmerDashboard from './FarmerDashboard';
 import type { UserRole, Profile } from './lib/roleService';
 import { fetchProfile } from './lib/roleService';
 import { fetchConsent } from './lib/consentService';
@@ -1396,7 +1397,7 @@ export default function App() {
                 </button>
               </>
             )}
-            {view === 'home' && (
+            {view === 'home' && role !== 'farmer' && (
               <span className="text-xs font-semibold text-green-700 bg-green-50 px-3 py-1 rounded-full border border-green-200">
                 Hackathon Prototype
               </span>
@@ -1442,8 +1443,18 @@ export default function App() {
       {/* ── Main Content ── */}
       <main className="flex-1 max-w-5xl mx-auto px-4 sm:px-6 py-10 flex flex-col items-center w-full">
 
-        {/* ── HOME VIEW ── */}
-        {view === 'home' && (
+        {/* ── HOME VIEW: Farmer Dashboard (farmers) or hero (buyers) ── */}
+        {view === 'home' && role === 'farmer' && profile && (
+          <FarmerDashboard
+            user={user}
+            profile={profile}
+            onStartPlanner={handleStart}
+            onGoToMarketplace={() => setView('marketplace')}
+            onGoToProfile={() => setView('profile')}
+          />
+        )}
+
+        {view === 'home' && role !== 'farmer' && (
           <div className="w-full max-w-3xl mx-auto">
             <div className="text-center py-12">
               <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-green-100 text-green-800 text-sm font-semibold mb-8 border border-green-200">
@@ -1463,9 +1474,7 @@ export default function App() {
                   Start Selling Decision →
                 </button>
                 <button
-                  onClick={() => {
-                    setView('marketplace');
-                  }}
+                  onClick={() => setView('marketplace')}
                   className="inline-flex items-center justify-center px-6 py-4 text-base font-semibold text-green-700 bg-white border-2 border-green-200 hover:border-green-400 hover:bg-green-50 rounded-2xl shadow-sm transition-all active:scale-95"
                 >
                   🏪 Browse Marketplace
