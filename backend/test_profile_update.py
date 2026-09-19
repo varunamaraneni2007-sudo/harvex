@@ -3,6 +3,7 @@ Step 24 — Farmer Profile PATCH tests.
 All Supabase calls are mocked. No live credentials needed.
 """
 from unittest.mock import MagicMock, patch
+from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
@@ -64,6 +65,14 @@ def _mock_sb_no_profile(uid: str):
     empty.execute.return_value = MagicMock(data=[])
     sb.table.return_value.select.return_value.eq.return_value = empty
     return sb
+
+
+def test_profiles_schema_grants_only_required_backend_operations():
+    schema = Path(__file__).with_name("schema.sql").read_text()
+    assert "REVOKE ALL ON TABLE profiles FROM anon;" in schema
+    assert "GRANT SELECT, INSERT ON TABLE profiles TO authenticated;" in schema
+    assert "GRANT SELECT, INSERT, UPDATE ON TABLE profiles TO service_role;" in schema
+    assert "GRANT ALL ON TABLE profiles" not in schema
 
 
 # ── PATCH /api/profile ────────────────────────────────────────────────────────

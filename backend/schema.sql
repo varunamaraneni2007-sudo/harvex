@@ -95,6 +95,14 @@ CREATE POLICY "profiles: owner insert"
 -- Users cannot update their own role (no UPDATE policy → updates blocked)
 -- Backend service-role key bypasses RLS for administrative operations.
 
+-- RLS does not replace PostgreSQL table privileges. The API uses the
+-- backend-only service_role client to look up, create, and update profiles.
+-- Authenticated users retain only the operations allowed by the owner policies;
+-- anonymous users receive no profile-table access.
+REVOKE ALL ON TABLE profiles FROM anon;
+GRANT SELECT, INSERT ON TABLE profiles TO authenticated;
+GRANT SELECT, INSERT, UPDATE ON TABLE profiles TO service_role;
+
 -- ── farmer_inputs policies ────────────────────────────────────────────────────
 
 -- A farmer can read their own submissions
