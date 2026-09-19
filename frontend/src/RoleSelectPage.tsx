@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import type { UserRole, Profile } from './lib/roleService';
-import { createProfile } from './lib/roleService';
+import { createProfile, fetchProfile } from './lib/roleService';
 
 interface RoleSelectPageProps {
   fullName: string | null;
@@ -20,7 +20,21 @@ export default function RoleSelectPage({ fullName, onRoleSelected }: RoleSelectP
       const p = await createProfile(selected, fullName ?? undefined);
       onRoleSelected(selected, p);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Something went wrong. Please try again.');
+      const msg = err instanceof Error ? err.message : 'Something went wrong. Please try again.';
+      // Profile already exists — recover by fetching it and routing to the right destination
+      // rather than leaving the user stuck on this page with an error they cannot resolve.
+      if (msg.toLowerCase().includes('already exists')) {
+        try {
+          const existing = await fetchProfile();
+          if (existing) {
+            onRoleSelected(existing.role, existing);
+            return;
+          }
+        } catch {
+          // fall through to show the original error
+        }
+      }
+      setError(msg);
     } finally {
       setLoading(false);
     }

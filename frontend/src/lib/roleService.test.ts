@@ -275,6 +275,36 @@ describe('fetchProfile with accessToken — existing-user routing', () => {
   });
 });
 
+// ── 409 recovery: RoleSelectPage self-healing ────────────────────────────────
+
+describe('RoleSelectPage 409 recovery (service layer)', () => {
+  it('fetchProfile returns existing profile after createProfile is rejected with 409', async () => {
+    withSession();
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn()
+        // Step 1: POST /api/profile → 409 profile already exists
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 409,
+          json: () => Promise.resolve({ detail: 'Profile already exists. Role cannot be changed.' }),
+        })
+        // Step 2: GET /api/profile → existing farmer profile (recovery fetch)
+        .mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve(FARMER_PROFILE),
+        }),
+    );
+
+    await expect(createProfile('buyer')).rejects.toThrow('Profile already exists. Role cannot be changed.');
+    const recovered = await fetchProfile();
+    expect(recovered).not.toBeNull();
+    expect(recovered!.role).toBe('farmer');
+  });
+});
+
 // ── Buyer registration flow (service layer) ───────────────────────────────────
 
 describe('Buyer registration flow', () => {
