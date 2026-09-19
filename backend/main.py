@@ -267,65 +267,25 @@ class ProduceInput(BaseModel):
     shelf_life_days: int
 
 
-# ── Sample market data ────────────────────────────────────────────────────────
+# ── Market catalogue (data-driven) ───────────────────────────────────────────
 
-MARKETS = [
-    {
-        "market_name": "Local Mandi",
-        "location": "Vijayawada",
-        "base_price_per_kg": 12.0,
-        "transport_cost_per_kg": 0.5,
-        "capacity_kg": 500.0,
-        "base_spoilage_pct": 3.0,
-        "buyer_type": "Local Mandi",
-        "accepted_crops": ["all"],
-        "min_quality": "Low",
-    },
-    {
-        "market_name": "Guntur Wholesale Hub",
-        "location": "Guntur",
-        "base_price_per_kg": 15.0,
-        "transport_cost_per_kg": 1.2,
-        "capacity_kg": 2000.0,
-        "base_spoilage_pct": 5.0,
-        "buyer_type": "Wholesale Buyer",
-        "accepted_crops": ["all"],
-        "min_quality": "Low",
-    },
-    {
-        "market_name": "Hyderabad Metro Market",
-        "location": "Hyderabad",
-        "base_price_per_kg": 20.0,
-        "transport_cost_per_kg": 3.5,
-        "capacity_kg": 5000.0,
-        "base_spoilage_pct": 8.0,
-        "buyer_type": "Retail Chain",
-        "accepted_crops": ["all"],
-        "min_quality": "Standard",
-    },
-    {
-        "market_name": "FreshLink Retail Aggregator",
-        "location": "Vijayawada",
-        "base_price_per_kg": 18.0,
-        "transport_cost_per_kg": 0.8,
-        "capacity_kg": 300.0,
-        "base_spoilage_pct": 2.0,
-        "buyer_type": "Retail Chain",
-        "accepted_crops": ["all"],
-        "min_quality": "Standard",
-    },
-    {
-        "market_name": "FreezeMart Cold Storage",
-        "location": "Guntur",
-        "base_price_per_kg": 14.0,
-        "transport_cost_per_kg": 1.5,
-        "capacity_kg": 10000.0,
-        "base_spoilage_pct": 1.0,
-        "buyer_type": "Cold Storage",
-        "accepted_crops": ["all"],
-        "min_quality": "Low",
-    },
-]
+def _load_markets() -> List[dict]:
+    """
+    Load the market catalogue from data/markets.json relative to this file.
+    The JSON file is the single source of truth for market operational parameters
+    (price, capacity, transport cost, spoilage rate, quality threshold, buyer type).
+    Falls back to an empty list on any I/O or parse error so the app still starts.
+    """
+    import json
+    catalogue_path = os.path.join(os.path.dirname(__file__), "data", "markets.json")
+    try:
+        with open(catalogue_path, encoding="utf-8") as fh:
+            return json.load(fh)
+    except Exception:
+        return []
+
+
+MARKETS: List[dict] = _load_markets()
 
 QUALITY_MULTIPLIER = {
     "Premium": 1.15,
@@ -371,6 +331,58 @@ ALLOCATION_STRATEGIES = [
         "spoilage_weight": 5.0,
     },
 ]
+
+
+# ── [Steps 32–35] Data-driven market preparation ──────────────────────────────
+
+def _enrich_markets_with_prices(markets: List[dict], crop: str) -> List[dict]:
+    """
+    Overlay live AGMARKNET modal prices on the market list for the given crop.
+    When a market's name matches an AGMARKNET price record for this crop, its
+    base_price_per_kg is replaced with the live modal price.  Markets without a
+    live price record keep their static price.  Safe: never raises or returns
+    fewer markets than it received.
+    """
+    if not crop or not crop.strip():
+        return markets
+    try:
+        from price_service import get_price_repository
+        repo = get_price_repository()
+        prices = repo.search(commodity=crop.strip(), latest=True, limit=500)
+        if not prices:
+            return markets
+        # Index by lower-case market name — keep first (most-recent) match.
+        live: dict = {}
+        for p in prices:
+            if p.modal_price_per_kg is not None:
+                key = p.market_name.strip().lower()
+                if key not in live:
+                    live[key] = p.modal_price_per_kg
+        if not live:
+            return markets
+        return [
+            {**m, "base_price_per_kg": live[m["market_name"].strip().lower()]}
+            if m["market_name"].strip().lower() in live
+            else m
+            for m in markets
+        ]
+    except Exception:
+        return markets
+
+
+def _prepare_markets(data: ProduceInput) -> List[dict]:
+    """
+    Return the market catalogue enriched with live prices and road distances.
+
+    Steps:
+      1. Overlay AGMARKNET modal prices for the farmer's crop where available.
+      2. Enrich with real road distance/travel-time from the farmer's location.
+
+    Both steps degrade gracefully — static prices and per-kg transport costs
+    are preserved when the respective services are unconfigured or fail.
+    """
+    markets = _enrich_markets_with_prices(MARKETS, data.crop)
+    return enrich_markets_with_distances(data.farmer_location, markets)
 
 
 # ── [Step 29 / 30 / 31] Buyer requirements CRUD ──────────────────────────────
@@ -678,11 +690,13 @@ class RecommendationResponse(BaseModel):
     summary: str
 
 
-def calculate_opportunities(data: ProduceInput) -> List[OpportunityResult]:
+def calculate_opportunities(data: ProduceInput, markets: Optional[List[dict]] = None) -> List[OpportunityResult]:
+    if markets is None:
+        markets = MARKETS
     quality_mult = QUALITY_MULTIPLIER.get(data.quality, 1.0)
     results: List[OpportunityResult] = []
 
-    for m in MARKETS:
+    for m in markets:
         price = round(m["base_price_per_kg"] * quality_mult, 2)
         allocated_qty = min(data.quantity_kg, m["capacity_kg"])
         spoilage_pct = m["base_spoilage_pct"]
@@ -719,7 +733,7 @@ def calculate_opportunities(data: ProduceInput) -> List[OpportunityResult]:
 
 @app.post("/api/recommend")
 def recommend(data: ProduceInput) -> RecommendationResponse:
-    opportunities = calculate_opportunities(data)
+    opportunities = calculate_opportunities(data, _prepare_markets(data))
     if opportunities:
         top = opportunities[0]
         summary = (
@@ -779,13 +793,23 @@ def _effective_spoilage_pct(base_pct: float, shelf_life_days: int) -> float:
     return base_pct
 
 
-def _eligible_markets(markets: List[dict], quality: str) -> List[dict]:
-    """Return only markets whose min_quality the farmer's produce meets."""
+def _eligible_markets(markets: List[dict], quality: str, crop: Optional[str] = None) -> List[dict]:
+    """
+    Return only markets whose min_quality and accepted_crops the farmer's produce meets.
+    crop=None skips crop filtering (backward-compatible).
+    """
     farmer_rank = QUALITY_ORDER.get(quality, 1)
-    return [
-        m for m in markets
-        if QUALITY_ORDER.get(m.get("min_quality", "Low"), 0) <= farmer_rank
-    ]
+    result = []
+    for m in markets:
+        if QUALITY_ORDER.get(m.get("min_quality", "Low"), 0) > farmer_rank:
+            continue
+        if crop:
+            accepted = m.get("accepted_crops", ["all"])
+            if "all" not in [a.lower() for a in accepted]:
+                if crop.lower() not in [a.lower() for a in accepted]:
+                    continue
+        result.append(m)
+    return result
 
 
 def _true_net_per_kg(market: dict, quality_mult: float, shelf_life_days: int) -> float:
@@ -927,7 +951,7 @@ def _allocation_signature(strategy: AllocationStrategy) -> frozenset:
 def _run_optimize(data: ProduceInput, markets: List[dict]) -> OptimizeResponse:
     """Core optimizer; accepts any markets list (real-distance or static)."""
     quality_mult = QUALITY_MULTIPLIER.get(data.quality, 1.0)
-    markets = _eligible_markets(markets, data.quality)
+    markets = _eligible_markets(markets, data.quality, data.crop)
 
     strategies: List[AllocationStrategy] = []
     seen_signatures: set = set()
@@ -985,7 +1009,7 @@ def _run_optimize(data: ProduceInput, markets: List[dict]) -> OptimizeResponse:
 
 @app.post("/api/decision/optimize")
 def optimize(data: ProduceInput) -> OptimizeResponse:
-    return _run_optimize(data, MARKETS)
+    return _run_optimize(data, _prepare_markets(data))
 
 
 # ── /api/markets ─────────────────────────────────────────────────────────────
@@ -1130,8 +1154,9 @@ def whatif(req: WhatIfRequest) -> WhatIfResponse:
     scenario = req.scenario
     quality_mult = QUALITY_MULTIPLIER.get(data.quality, 1.0)
 
-    # Current plan — greedy on original MARKETS (filtered by quality)
-    eligible = _eligible_markets(MARKETS, data.quality)
+    # Current plan — greedy on prepared markets (price/distance-enriched, filtered by crop+quality)
+    prepared = _prepare_markets(data)
+    eligible = _eligible_markets(prepared, data.quality, data.crop)
     current_raw = _greedy_allocate(data.quantity_kg, eligible, quality_mult, data.shelf_life_days)
     current_plan = _plan_from_allocations(eligible, current_raw, quality_mult, data.shelf_life_days)
 
@@ -1281,7 +1306,7 @@ def _build_plan_result(
 def _run_plans(data: ProduceInput, markets: List[dict]) -> PlansResponse:
     """Core plan generator; accepts any markets list (real-distance or static)."""
     quality_mult = QUALITY_MULTIPLIER.get(data.quality, 1.0)
-    markets = _eligible_markets(markets, data.quality)
+    markets = _eligible_markets(markets, data.quality, data.crop)
 
     raw_a = _greedy_allocate(data.quantity_kg, markets, quality_mult, data.shelf_life_days)
     raw_b = _plan_b_allocate(data.quantity_kg, markets, quality_mult, data.shelf_life_days)
@@ -1319,7 +1344,7 @@ def _run_plans(data: ProduceInput, markets: List[dict]) -> PlansResponse:
 
 @app.post("/api/decision/plans")
 def plans(data: ProduceInput) -> PlansResponse:
-    return _run_plans(data, MARKETS)
+    return _run_plans(data, _prepare_markets(data))
 
 
 # ── /api/submission (persist + return all results) ────────────────────────────
@@ -1406,9 +1431,9 @@ def _save_to_supabase(
 
 @app.post("/api/submission")
 def submission(data: ProduceInput, authorization: Optional[str] = Header(default=None)) -> SubmissionResponse:
-    # Enrich markets with real road distances; falls back to static costs if
-    # the Maps API key is missing or the call fails.
-    markets = enrich_markets_with_distances(data.farmer_location, MARKETS)
+    # Enrich markets with live prices and road distances; both fall back to
+    # static values when their respective services are unconfigured.
+    markets = _prepare_markets(data)
     optimize_resp = _run_optimize(data, markets)
     plans_resp = _run_plans(data, markets)
     user_id = _extract_user_id(authorization)
@@ -1689,7 +1714,10 @@ def marketplace(
     Filters, suitability, and net-value previews are all computed server-side
     using the same decision-engine calculations as the rest of the API.
     """
-    enriched = enrich_markets_with_distances(farmer_location, MARKETS)
+    # Overlay live AGMARKNET prices for this crop when crop is known,
+    # then enrich with road distances from the farmer's location.
+    base_markets = _enrich_markets_with_prices(MARKETS, crop) if crop else MARKETS
+    enriched = enrich_markets_with_distances(farmer_location, base_markets)
 
     cards: List[MarketCard] = []
     for m in enriched:
