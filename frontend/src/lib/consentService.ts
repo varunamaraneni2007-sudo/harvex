@@ -16,9 +16,14 @@ async function authHeader(): Promise<Record<string, string>> {
 /**
  * Check whether the farmer has given consent for the current version.
  * Returns the consent record, or null if none exists yet.
+ *
+ * Pass accessToken when calling from inside an onAuthStateChange callback
+ * for the same reason as fetchProfile — see roleService.ts for details.
  */
-export async function fetchConsent(): Promise<ConsentRecord | null> {
-  const headers = await authHeader();
+export async function fetchConsent(accessToken?: string): Promise<ConsentRecord | null> {
+  const headers = accessToken
+    ? { Authorization: `Bearer ${accessToken}` }
+    : await authHeader();
   const resp = await fetch('/api/consent', { headers });
   if (resp.status === 404) return null;
   if (!resp.ok) throw new Error(`Failed to check consent: ${resp.status}`);
