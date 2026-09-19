@@ -969,13 +969,16 @@ export default function App() {
   const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
 
   useEffect(() => {
-    // Restore session from storage and subscribe to auth changes
-    supabase.auth.getSession().then(({ data: { session } }) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       setUser(session?.user ?? null);
-      setAuthLoading(false);
+      if (event === 'INITIAL_SESSION') {
+        setAuthLoading(false);
+      }
     });
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      setUser(session?.user ?? null);
+    // Fallback: if INITIAL_SESSION never fires (e.g. client throws), clear loading
+    supabase.auth.getSession().catch(() => {
+      setUser(null);
+      setAuthLoading(false);
     });
     return () => subscription.unsubscribe();
   }, []);
