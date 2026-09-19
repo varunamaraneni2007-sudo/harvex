@@ -955,6 +955,46 @@ def distances(farmer_location: str = Query(..., description="Farmer's location")
     ]
 
 
+# ── /api/markets — Real APMC market discovery (AGMARKNET) ────────────────────
+
+@app.get("/api/markets/discover")
+def markets_discover(
+    state: Optional[str] = Query(None, description="Filter by state name"),
+    district: Optional[str] = Query(None, description="Filter by district name"),
+    q: Optional[str] = Query(None, description="Free-text search (name / district / state)"),
+    commodity: Optional[str] = Query(None, description="Filter by commodity/crop"),
+    limit: int = Query(50, ge=1, le=200, description="Max results to return"),
+):
+    """
+    Discover real Indian APMC markets from the AGMARKNET seed database.
+    Returns market identity and location — no pricing (Step 19 adds live prices).
+    Source: Agricultural Marketing Information Network (AGMARKNET / data.gov.in).
+    """
+    from market_repository import get_repository
+    repo = get_repository()
+    markets = repo.search(state=state, district=district, q=q, commodity=commodity, limit=limit)
+    return {
+        "markets": [m.model_dump() for m in markets],
+        "total": len(markets),
+        "source": "AGMARKNET/data.gov.in",
+        "note": "Pricing data will be added in Step 19 (live AGMARKNET price integration).",
+    }
+
+
+@app.get("/api/markets/states")
+def markets_states():
+    """Return all unique Indian states present in the market database."""
+    from market_repository import get_repository
+    return {"states": get_repository().all_states()}
+
+
+@app.get("/api/markets/districts")
+def markets_districts(state: str = Query(..., description="State name")):
+    """Return all districts in the given state that have known APMC markets."""
+    from market_repository import get_repository
+    return {"state": state, "districts": get_repository().districts_in_state(state)}
+
+
 # ── /api/places — Google Places proxy (key never reaches browser) ─────────────
 
 @app.get("/api/places/autocomplete")
