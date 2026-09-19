@@ -6,7 +6,7 @@ try:
 except ImportError:
     pass
 
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional, Tuple
@@ -39,6 +39,34 @@ def _get_supabase():
 
 app = FastAPI(title="Farm2Value API")
 
+# ── JWT helpers ───────────────────────────────────────────────────────────────
+
+def _extract_user_id(authorization: Optional[str]) -> Optional[str]:
+    """
+    Extract the Supabase user UUID from a Bearer JWT using the Supabase client.
+    Returns None on any failure — callers decide whether to 401 or continue.
+    """
+    if not isinstance(authorization, str) or not authorization.startswith("Bearer "):
+        return None
+    token = authorization[len("Bearer "):]
+    sb = _get_supabase()
+    if sb is None:
+        return None
+    try:
+        resp = sb.auth.get_user(token)
+        user = resp.user if hasattr(resp, "user") else None
+        return str(user.id) if user and user.id else None
+    except Exception:
+        return None
+
+
+def _require_user_id(authorization: Optional[str]) -> str:
+    """Like _extract_user_id but raises HTTP 401 when no valid user is found."""
+    uid = _extract_user_id(authorization)
+    if not uid:
+        raise HTTPException(status_code=401, detail="Authentication required.")
+    return uid
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -50,6 +78,59 @@ app.add_middleware(
 @app.get("/api/health")
 def health_check():
     return {"status": "ok"}
+
+
+# ── [Step 21] Profile endpoints ───────────────────────────────────────────────
+
+class ProfilePayload(BaseModel):
+    role: str        # 'farmer' | 'buyer'
+    full_name: Optional[str] = None
+
+
+@app.get("/api/profile")
+def get_profile(authorization: Optional[str] = Header(default=None)):
+    """Return the authenticated user's profile row, or 404 if not yet created."""
+    uid = _require_user_id(authorization)
+    sb = _get_supabase()
+    if sb is None:
+        raise HTTPException(status_code=503, detail="Database not configured.")
+    try:
+        resp = sb.table("profiles").select("id,role,full_name,created_at").eq("id", uid).execute()
+        if not resp.data:
+            raise HTTPException(status_code=404, detail="Profile not found.")
+        return resp.data[0]
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/api/profile", status_code=201)
+def create_profile(payload: ProfilePayload, authorization: Optional[str] = Header(default=None)):
+    """
+    Create the user's profile with their chosen role.
+    Roles are immutable after creation — subsequent calls return 409.
+    """
+    if payload.role not in ("farmer", "buyer"):
+        raise HTTPException(status_code=422, detail="role must be 'farmer' or 'buyer'.")
+    uid = _require_user_id(authorization)
+    sb = _get_supabase()
+    if sb is None:
+        raise HTTPException(status_code=503, detail="Database not configured.")
+    try:
+        # Check whether a profile already exists
+        existing = sb.table("profiles").select("id,role").eq("id", uid).execute()
+        if existing.data:
+            raise HTTPException(status_code=409, detail="Profile already exists. Role cannot be changed.")
+        row = {"id": uid, "role": payload.role}
+        if payload.full_name:
+            row["full_name"] = payload.full_name.strip()
+        resp = sb.table("profiles").insert(row).execute()
+        return resp.data[0]
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 # ── Shared input model ────────────────────────────────────────────────────────
@@ -881,6 +962,7 @@ def _save_to_supabase(
     data,
     optimize_resp: OptimizeResponse,
     plans_resp: PlansResponse,
+    user_id: Optional[str] = None,
 ) -> Optional[str]:
     """
     Persist farmer input + recommended plan + Plan A/B/C to Supabase.
@@ -891,16 +973,19 @@ def _save_to_supabase(
     if sb is None:
         return None
     try:
+        row: dict = {
+            "crop": data.crop,
+            "quantity_kg": float(data.quantity_kg),
+            "quality": data.quality,
+            "farmer_location": data.farmer_location,
+            "harvest_date": data.harvest_date,
+            "shelf_life_days": data.shelf_life_days,
+        }
+        if user_id:
+            row["user_id"] = user_id
         input_row = (
             sb.table("farmer_inputs")
-            .insert({
-                "crop": data.crop,
-                "quantity_kg": float(data.quantity_kg),
-                "quality": data.quality,
-                "farmer_location": data.farmer_location,
-                "harvest_date": data.harvest_date,
-                "shelf_life_days": data.shelf_life_days,
-            })
+            .insert(row)
             .execute()
         )
         farmer_input_id: str = input_row.data[0]["id"]
@@ -916,13 +1001,14 @@ def _save_to_supabase(
 
 
 @app.post("/api/submission")
-def submission(data: ProduceInput) -> SubmissionResponse:
+def submission(data: ProduceInput, authorization: Optional[str] = Header(default=None)) -> SubmissionResponse:
     # Enrich markets with real road distances; falls back to static costs if
     # the Maps API key is missing or the call fails.
     markets = enrich_markets_with_distances(data.farmer_location, MARKETS)
     optimize_resp = _run_optimize(data, markets)
     plans_resp = _run_plans(data, markets)
-    farmer_input_id = _save_to_supabase(data, optimize_resp, plans_resp)
+    user_id = _extract_user_id(authorization)
+    farmer_input_id = _save_to_supabase(data, optimize_resp, plans_resp, user_id=user_id)
     explanation = generate_explanation(data, optimize_resp, plans_resp)
     return SubmissionResponse(
         optimize=optimize_resp,

@@ -2,6 +2,9 @@ import React, { useState, useEffect, useRef } from 'react';
 import type { User } from '@supabase/supabase-js';
 import { supabase } from './lib/supabaseClient';
 import AuthPage from './AuthPage';
+import RoleSelectPage from './RoleSelectPage';
+import type { UserRole } from './lib/roleService';
+import { fetchProfile } from './lib/roleService';
 
 // ── API Types ─────────────────────────────────────────────────────────────────
 
@@ -967,17 +970,38 @@ export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
+  const [role, setRole] = useState<UserRole | null>(null);
+  const [roleLoading, setRoleLoading] = useState(false);
 
   useEffect(() => {
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
-      setUser(session?.user ?? null);
+      const nextUser = session?.user ?? null;
+      setUser(nextUser);
       if (event === 'INITIAL_SESSION') {
-        setAuthLoading(false);
+        if (nextUser) {
+          setRoleLoading(true);
+          fetchProfile()
+            .then((p) => setRole(p?.role ?? null))
+            .catch(() => setRole(null))
+            .finally(() => { setRoleLoading(false); setAuthLoading(false); });
+        } else {
+          setRole(null);
+          setAuthLoading(false);
+        }
+      } else if (event === 'SIGNED_IN') {
+        setRoleLoading(true);
+        fetchProfile()
+          .then((p) => setRole(p?.role ?? null))
+          .catch(() => setRole(null))
+          .finally(() => setRoleLoading(false));
+      } else if (event === 'SIGNED_OUT') {
+        setRole(null);
       }
     });
     // Fallback: if INITIAL_SESSION never fires (e.g. client throws), clear loading
     supabase.auth.getSession().catch(() => {
       setUser(null);
+      setRole(null);
       setAuthLoading(false);
     });
     return () => subscription.unsubscribe();
@@ -1173,9 +1197,12 @@ export default function App() {
     };
 
     try {
+      const { data: { session: activeSession } } = await supabase.auth.getSession();
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (activeSession) headers['Authorization'] = `Bearer ${activeSession.access_token}`;
       const response = await fetch('/api/submission', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify(payload),
       });
 
@@ -1254,7 +1281,7 @@ export default function App() {
     'w-full px-3 py-2.5 text-sm rounded-xl border border-gray-200 focus:ring-2 focus:ring-green-500 focus:border-green-500 outline-none transition bg-white placeholder:text-gray-300';
 
   // ── Auth gating ────────────────────────────────────────────────────────────
-  if (authLoading) {
+  if (authLoading || roleLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gradient-to-b from-green-50/60 via-white to-white">
         <div className="flex flex-col items-center gap-4">
@@ -1274,6 +1301,16 @@ export default function App() {
     (user.user_metadata?.full_name as string | undefined) ||
     user.email?.split('@')[0] ||
     'Farmer';
+
+  // Role selection screen — shown once after first login
+  if (!role) {
+    return (
+      <RoleSelectPage
+        fullName={(user.user_metadata?.full_name as string | undefined) ?? null}
+        onRoleSelected={(r) => setRole(r)}
+      />
+    );
+  }
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-green-50/60 via-white to-white text-gray-800 flex flex-col">
@@ -1328,6 +1365,13 @@ export default function App() {
 
             {/* User info + logout */}
             <div className="flex items-center gap-2 ml-2 border-l border-gray-100 pl-3">
+              {role && (
+                <span className={`text-xs px-2 py-0.5 rounded-full font-medium hidden sm:inline ${
+                  role === 'farmer' ? 'bg-green-100 text-green-700' : 'bg-blue-100 text-blue-700'
+                }`}>
+                  {role === 'farmer' ? '🌾 Farmer' : '🏪 Buyer'}
+                </span>
+              )}
               <span className="text-xs text-gray-500 hidden sm:inline truncate max-w-[140px]" title={user.email}>
                 {displayName}
               </span>
