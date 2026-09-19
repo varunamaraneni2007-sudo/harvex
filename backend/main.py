@@ -955,6 +955,36 @@ def distances(farmer_location: str = Query(..., description="Farmer's location")
     ]
 
 
+# ── /api/places — Google Places proxy (key never reaches browser) ─────────────
+
+@app.get("/api/places/autocomplete")
+def places_autocomplete(
+    input: str = Query(..., description="User search text"),
+    session_token: str = Query(default="", description="Billing session token"),
+):
+    """
+    Proxy to Google Places Autocomplete (New) API.  The Google API key stays
+    on the server; the browser never sees it.  Returns suggestions plus a
+    maps_configured flag so the frontend can degrade to free-text gracefully.
+    """
+    from maps_service import autocomplete_places
+    key_present = bool(os.getenv("GOOGLE_MAPS_API_KEY", ""))
+    suggestions = autocomplete_places(input, session_token)
+    return {"suggestions": suggestions, "maps_configured": key_present}
+
+
+@app.get("/api/places/details")
+def places_details(place_id: str = Query(..., description="Google Place ID")):
+    """
+    Proxy to Google Place Details (New) API.  Returns the canonical address,
+    place ID, and lat/lng for the selected place, or place: null on failure.
+    """
+    from maps_service import get_place_details
+    key_present = bool(os.getenv("GOOGLE_MAPS_API_KEY", ""))
+    details = get_place_details(place_id)
+    return {"place": details, "maps_configured": key_present}
+
+
 # ── /api/marketplace ──────────────────────────────────────────────────────────
 
 class MarketCard(BaseModel):

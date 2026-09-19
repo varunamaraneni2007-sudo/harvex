@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 
 // ── API Types ─────────────────────────────────────────────────────────────────
 
@@ -671,6 +671,204 @@ function BuyerCard({
   );
 }
 
+// ── Places types ─────────────────────────────────────────────────────────────
+
+interface PlaceSelection {
+  address: string;
+  placeId: string;
+  lat: number | null;
+  lng: number | null;
+}
+
+interface PlaceSuggestion {
+  place_id: string;
+  description: string;
+  main_text: string;
+  secondary_text: string;
+}
+
+// ── Places Location Selector ──────────────────────────────────────────────────
+
+function PlacesLocationSelector({
+  selected,
+  onSelect,
+  onClear,
+  inputCls,
+}: {
+  selected: PlaceSelection | null;
+  onSelect: (place: PlaceSelection) => void;
+  onClear: () => void;
+  inputCls: string;
+}) {
+  const [inputText, setInputText] = useState('');
+  const [suggestions, setSuggestions] = useState<PlaceSuggestion[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [mapsAvailable, setMapsAvailable] = useState<boolean | null>(null);
+  const [dropdownOpen, setDropdownOpen] = useState(false);
+  const [detailLoading, setDetailLoading] = useState(false);
+  // Stable billing session token for the lifetime of this component instance
+  const sessionToken = useRef(`${Date.now()}-${Math.random().toString(36).slice(2)}`).current;
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Debounced autocomplete fetch whenever inputText changes
+  useEffect(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+
+    if (!inputText.trim() || inputText.trim().length < 2) {
+      setSuggestions([]);
+      setDropdownOpen(false);
+      return;
+    }
+
+    debounceRef.current = setTimeout(() => {
+      setLoading(true);
+      fetch(
+        `/api/places/autocomplete?input=${encodeURIComponent(inputText)}&session_token=${encodeURIComponent(sessionToken)}`
+      )
+        .then((r) => r.json())
+        .then((data) => {
+          setMapsAvailable(data.maps_configured ?? false);
+          const sugg: PlaceSuggestion[] = data.suggestions || [];
+          setSuggestions(sugg);
+          if (sugg.length > 0) setDropdownOpen(true);
+        })
+        .catch(() => {
+          setMapsAvailable(false);
+          setSuggestions([]);
+        })
+        .finally(() => setLoading(false));
+    }, 300);
+
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
+  }, [inputText, sessionToken]);
+
+  function handleSelectSuggestion(s: PlaceSuggestion) {
+    setDropdownOpen(false);
+    setSuggestions([]);
+    setInputText('');
+    setDetailLoading(true);
+    fetch(`/api/places/details?place_id=${encodeURIComponent(s.place_id)}`)
+      .then((r) => r.json())
+      .then((data) => {
+        if (data.place) {
+          onSelect({
+            address: data.place.formatted_address || s.description,
+            placeId: data.place.place_id || s.place_id,
+            lat: data.place.lat ?? null,
+            lng: data.place.lng ?? null,
+          });
+        } else {
+          onSelect({ address: s.description, placeId: s.place_id, lat: null, lng: null });
+        }
+      })
+      .catch(() => {
+        onSelect({ address: s.description, placeId: s.place_id, lat: null, lng: null });
+      })
+      .finally(() => setDetailLoading(false));
+  }
+
+  function handleFallbackConfirm() {
+    const text = inputText.trim();
+    if (text) {
+      onSelect({ address: text, placeId: '', lat: null, lng: null });
+      setInputText('');
+    }
+  }
+
+  // ── Confirmed chip view ───────────────────────────────────────────────────
+  if (selected) {
+    return (
+      <div className="flex items-center gap-2 px-4 py-3 rounded-xl border border-green-300 bg-green-50">
+        <span className="text-green-600 flex-shrink-0">📍</span>
+        <span className="flex-1 text-sm text-gray-800 font-medium truncate">{selected.address}</span>
+        {selected.placeId && (
+          <span className="text-xs font-medium text-green-600 flex-shrink-0">✓ Verified</span>
+        )}
+        <button
+          type="button"
+          onClick={onClear}
+          className="text-gray-300 hover:text-gray-600 text-sm ml-1 flex-shrink-0 transition"
+          aria-label="Change location"
+        >✕</button>
+      </div>
+    );
+  }
+
+  // ── Input + dropdown view ─────────────────────────────────────────────────
+  return (
+    <div className="relative">
+      <div className="relative">
+        <input
+          type="text"
+          placeholder="Type your village, town or city…"
+          value={detailLoading ? 'Loading place details…' : inputText}
+          disabled={detailLoading}
+          onChange={(e) => setInputText(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              if (mapsAvailable === false) handleFallbackConfirm();
+            }
+          }}
+          onBlur={() => setTimeout(() => setDropdownOpen(false), 150)}
+          autoComplete="off"
+          className={`${inputCls} ${detailLoading ? 'text-gray-400' : ''}`}
+        />
+        {(loading || detailLoading) && (
+          <span className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-300 text-xs pointer-events-none">
+            Searching…
+          </span>
+        )}
+      </div>
+
+      {/* Suggestions dropdown */}
+      {dropdownOpen && suggestions.length > 0 && (
+        <div className="absolute z-50 mt-1 w-full bg-white border border-gray-200 rounded-xl shadow-xl overflow-hidden">
+          {suggestions.map((s) => (
+            <button
+              key={s.place_id}
+              type="button"
+              onMouseDown={(e) => e.preventDefault()} // prevent blur before click
+              onClick={() => handleSelectSuggestion(s)}
+              className="w-full text-left px-4 py-3 hover:bg-green-50 transition border-b border-gray-50 last:border-b-0"
+            >
+              <div className="flex items-start gap-2">
+                <span className="text-green-500 flex-shrink-0 mt-0.5 text-sm">📍</span>
+                <div>
+                  <div className="text-sm font-medium text-gray-800">
+                    {s.main_text || s.description}
+                  </div>
+                  {s.secondary_text && (
+                    <div className="text-xs text-gray-400 mt-0.5">{s.secondary_text}</div>
+                  )}
+                </div>
+              </div>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Fallback hint when Maps API not configured */}
+      {mapsAvailable === false && inputText.trim().length >= 2 && (
+        <div className="mt-1.5 flex items-center gap-2">
+          <span className="text-xs text-gray-400 flex-1">
+            Location search unavailable — press <kbd className="font-mono bg-gray-100 px-1 rounded">Enter</kbd> or click Use to continue.
+          </span>
+          <button
+            type="button"
+            onClick={handleFallbackConfirm}
+            className="text-xs px-2.5 py-1 rounded-lg bg-green-600 text-white hover:bg-green-700 transition font-medium"
+          >
+            Use ↵
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Crop Catalogue ────────────────────────────────────────────────────────────
 
 const CROP_CATALOGUE = [
@@ -875,6 +1073,9 @@ export default function App() {
   const [quality, setQuality] = useState('Standard');
   const [shelfLife, setShelfLife] = useState('');
   const [farmerLocation, setFarmerLocation] = useState('');
+  const [farmerPlaceId, setFarmerPlaceId] = useState('');
+  const [farmerLat, setFarmerLat] = useState<number | null>(null);
+  const [farmerLng, setFarmerLng] = useState<number | null>(null);
   const [harvestDate, setHarvestDate] = useState('');
 
   // API state
@@ -978,6 +1179,9 @@ export default function App() {
     } else {
       setCrop(card.accepted_crops.includes('all') ? crop || '' : card.accepted_crops[0] || '');
       setFarmerLocation(mpFarmerLocation || farmerLocation);
+      setFarmerPlaceId('');  // marketplace uses free-text location
+      setFarmerLat(null);
+      setFarmerLng(null);
       setQuality(mpQuality || quality || 'Standard');
       if (mpQuantity) setQuantity(mpQuantity);
       if (mpShelfLife) setShelfLife(mpShelfLife);
@@ -991,6 +1195,9 @@ export default function App() {
     setQuality('Standard');
     setShelfLife('');
     setFarmerLocation('');
+    setFarmerPlaceId('');
+    setFarmerLat(null);
+    setFarmerLng(null);
     setHarvestDate('');
     setApiError(null);
     setResults(null);
@@ -1317,17 +1524,26 @@ export default function App() {
                 </div>
 
                 <div>
-                  <label htmlFor="farmerLocation" className="block text-sm font-semibold text-gray-700 mb-1.5">
-                    Your Location <span className="text-red-400">*</span>
+                  <label className="block text-sm font-semibold text-gray-700 mb-1.5">
+                    Where is your farm? <span className="text-red-400">*</span>
                   </label>
-                  <input
-                    id="farmerLocation"
-                    type="text"
-                    required
-                    placeholder="e.g. Vijayawada, Guntur"
-                    value={farmerLocation}
-                    onChange={(e) => setFarmerLocation(e.target.value)}
-                    className={inputCls}
+                  {/* Hidden input keeps native form validation — required blocks submit when empty */}
+                  <input type="text" required value={farmerLocation} onChange={() => {}} className="sr-only" tabIndex={-1} aria-hidden />
+                  <PlacesLocationSelector
+                    selected={farmerLocation ? { address: farmerLocation, placeId: farmerPlaceId, lat: farmerLat, lng: farmerLng } : null}
+                    onSelect={(place) => {
+                      setFarmerLocation(place.address);
+                      setFarmerPlaceId(place.placeId);
+                      setFarmerLat(place.lat);
+                      setFarmerLng(place.lng);
+                    }}
+                    onClear={() => {
+                      setFarmerLocation('');
+                      setFarmerPlaceId('');
+                      setFarmerLat(null);
+                      setFarmerLng(null);
+                    }}
+                    inputCls={inputCls}
                   />
                 </div>
 
