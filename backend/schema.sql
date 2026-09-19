@@ -155,6 +155,32 @@ CREATE POLICY "allocations: farmer select"
         )
     );
 
+-- ── [Step 23] Farmer consent ─────────────────────────────────────────────────
+-- One row per farmer. Re-consent creates a new row; previous rows are kept.
+CREATE TABLE IF NOT EXISTS farmer_consents (
+    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id      UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+    consented_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    version      TEXT NOT NULL DEFAULT '1.0'  -- bump when terms materially change
+);
+
+CREATE INDEX IF NOT EXISTS idx_farmer_consents_user
+    ON farmer_consents(user_id);
+
+ALTER TABLE farmer_consents ENABLE ROW LEVEL SECURITY;
+
+-- Farmer can read their own consent records
+DROP POLICY IF EXISTS "farmer_consents: owner select" ON farmer_consents;
+CREATE POLICY "farmer_consents: owner select"
+    ON farmer_consents FOR SELECT
+    USING (auth.uid() = user_id);
+
+-- Farmer can insert their own consent
+DROP POLICY IF EXISTS "farmer_consents: owner insert" ON farmer_consents;
+CREATE POLICY "farmer_consents: owner insert"
+    ON farmer_consents FOR INSERT
+    WITH CHECK (auth.uid() = user_id);
+
 -- ── Anonymous access is blocked by default ────────────────────────────────────
 -- No policies grant access to anon role, so anonymous requests are denied
 -- on all four tables once RLS is enabled.

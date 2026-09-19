@@ -133,6 +133,71 @@ def create_profile(payload: ProfilePayload, authorization: Optional[str] = Heade
         raise HTTPException(status_code=500, detail=str(exc))
 
 
+# ── [Step 23] Consent endpoints ──────────────────────────────────────────────
+
+CONSENT_VERSION = "1.0"
+
+
+@app.get("/api/consent")
+def get_consent(authorization: Optional[str] = Header(default=None)):
+    """
+    Return the farmer's latest consent record, or 404 if none exists.
+    Only farmers need consent; buyers are not blocked by this endpoint.
+    """
+    uid = _require_user_id(authorization)
+    sb = _get_supabase()
+    if sb is None:
+        raise HTTPException(status_code=503, detail="Database not configured.")
+    try:
+        resp = (
+            sb.table("farmer_consents")
+            .select("id,user_id,consented_at,version")
+            .eq("user_id", uid)
+            .eq("version", CONSENT_VERSION)
+            .order("consented_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        if not resp.data:
+            raise HTTPException(status_code=404, detail="Consent not recorded.")
+        return resp.data[0]
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/api/consent", status_code=201)
+def record_consent(authorization: Optional[str] = Header(default=None)):
+    """
+    Record the farmer's explicit consent. Idempotent — if consent for the
+    current version already exists, returns the existing record (200).
+    """
+    uid = _require_user_id(authorization)
+    sb = _get_supabase()
+    if sb is None:
+        raise HTTPException(status_code=503, detail="Database not configured.")
+    try:
+        existing = (
+            sb.table("farmer_consents")
+            .select("id,user_id,consented_at,version")
+            .eq("user_id", uid)
+            .eq("version", CONSENT_VERSION)
+            .limit(1)
+            .execute()
+        )
+        if existing.data:
+            from fastapi.responses import JSONResponse
+            return JSONResponse(status_code=200, content=existing.data[0])
+        row = {"user_id": uid, "version": CONSENT_VERSION}
+        resp = sb.table("farmer_consents").insert(row).execute()
+        return resp.data[0]
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
 # ── Shared input model ────────────────────────────────────────────────────────
 
 class ProduceInput(BaseModel):
